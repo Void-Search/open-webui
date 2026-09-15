@@ -17,6 +17,10 @@ from open_webui.config import (
 )
 from open_webui.constants import ERROR_MESSAGES, TASKS
 from open_webui.models.config import Config
+from open_webui.ravenous_input.context import (
+    reset_query_task_context,
+    set_query_task_context,
+)
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.chat import generate_chat_completion
@@ -467,6 +471,10 @@ async def generate_queries(request: Request, form_data: dict, user=Depends(get_v
 
     payload = apply_task_model_params(payload, models, task_model_id, task_model_params)
 
+    def render_query_messages(rendered_messages):
+        return query_generation_template(template, rendered_messages, user)
+
+    context_token = set_query_task_context(form_data['messages'], render_query_messages)
     try:
         return await generate_chat_completion(request, form_data=payload, user=user)
     except Exception as e:
@@ -474,6 +482,8 @@ async def generate_queries(request: Request, form_data: dict, user=Depends(get_v
             status_code=status.HTTP_400_BAD_REQUEST,
             content={'detail': str(e)},
         )
+    finally:
+        reset_query_task_context(context_token)
 
 
 @router.post('/auto/completions')

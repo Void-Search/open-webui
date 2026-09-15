@@ -50,6 +50,8 @@ from open_webui.models.models import Models
 from open_webui.models.notes import Notes
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.users import UserModel, Users
+from open_webui.ravenous_input.pipeline import prepare_request_prompt
+from open_webui.retrieval.ravenous_union_rerank import prepare_retrieval_queries
 from open_webui.retrieval.utils import get_sources_from_items
 from open_webui.routers.images import (
     CreateImageForm,
@@ -1991,6 +1993,7 @@ async def chat_completion_files_handler(
 ) -> tuple[dict, dict[str, list]]:
     __event_emitter__ = extra_params['__event_emitter__']
     sources = []
+    rerank_query = None
 
     files = [item for item in (body.get('metadata', {}).get('files', None) or []) if item.get('type') != 'filesystem']
     if files:
@@ -2025,8 +2028,13 @@ async def chat_completion_files_handler(
                     queries_response = {'queries': [queries_response]}
 
                 queries = queries_response.get('queries', [])
+                rerank_query = queries_response.get('intent')
             except Exception:
                 pass
+
+            queries, rerank_query = prepare_retrieval_queries(
+                get_last_user_message(body['messages']) or '', queries, rerank_query
+            )
 
             await __event_emitter__(
                 {
@@ -2057,6 +2065,7 @@ async def chat_completion_files_handler(
                 request=request,
                 items=files,
                 queries=queries,
+                rerank_query=rerank_query,
                 embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
                     query, prefix=prefix, user=user
                 ),
@@ -2104,7 +2113,7 @@ async def chat_completion_files_handler(
             }
         )
 
-    return body, {'sources': sources}
+    return body, {'sources': sources, 'rag_query': rerank_query}
 
 
 async def convert_url_images_to_base64(form_data, user=None):
@@ -2574,6 +2583,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     # Native FC: skip RAG injection, builtin tools
                     # will read folder knowledge from metadata.
                     metadata['folder_knowledge'] = await get_owner_accessible_folder_files(folder)
+
+    last_user_item = get_last_user_message_item(form_data['messages'])
+    if last_user_item is not None:
+        raw_content = last_user_item.get('content')
+        raw_text = raw_content if isinstance(raw_content, str) else get_last_user_message(form_data['messages'])
+        if isinstance(raw_text, str) and raw_text:
+            preparation = await prepare_request_prompt(request, raw_text)
+            if isinstance(raw_content, str):
+                last_user_item['content'] = preparation.prepared
+            elif isinstance(raw_content, list):
+                for part in raw_content:
+                    if isinstance(part, dict) and part.get('type') == 'text':
+                        part['text'] = preparation.prepared
+                        break
+            metadata['ravenous_input_preparation'] = preparation.public_dict()
 
     # Model "Knowledge" handling
     user_message = get_last_user_message(form_data['messages'])
@@ -3047,10 +3071,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
+    rag_query = prompt
     if file_context_enabled:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
             sources.extend(flags.get('sources', []))
+            rag_query = flags.get('rag_query') or rag_query
         except Exception as e:
             log.exception(e)
 
@@ -3074,7 +3100,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # If context is not empty, insert it into the messages
     if sources and prompt:
-        form_data['messages'] = await apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
+        form_data['messages'] = await apply_source_context_to_messages(
+            request, form_data['messages'], sources, rag_query
+        )
 
     # If there are citations, add them to the data_items
     sources = [

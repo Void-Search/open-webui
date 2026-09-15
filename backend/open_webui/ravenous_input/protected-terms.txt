@@ -1,0 +1,8 @@
+# Ravenous prompt-protection glossary, version 1.
+LanguageTool
+Open WebUI
+Qwen
+Qwen3
+Ravenous LLM
+llama.cpp
+pgvector

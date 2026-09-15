@@ -39,6 +39,11 @@ from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel
+from open_webui.ravenous_input.context import (
+    ContextBudgetError,
+    enforce_context_budget,
+    is_local_provider,
+)
 from open_webui.utils.access_control import check_model_access, has_connection_access, has_permission
 from open_webui.utils.anthropic import ANTHROPIC_VERSION, get_anthropic_models, is_anthropic_url
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -1611,6 +1616,13 @@ async def generate_chat_completion(
     is_streaming_request = bool(payload.get('stream', False))
     if not is_streaming_request:
         payload.pop('stream_options', None)
+
+    if is_local_provider(url):
+        try:
+            budget = await enforce_context_budget(payload, base_url=url, api_key=key)
+        except ContextBudgetError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        payload = budget.payload
 
     payload = JSONCodec.dumps(payload)
 

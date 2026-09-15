@@ -1,0 +1,25 @@
+name: Ravenous application tests
+
+on:
+  push:
+    branches: [ravenous]
+  pull_request:
+    branches: [ravenous]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r backend/tests/ravenous/requirements.txt
+      - run: PYTHONPATH=backend python -m pytest -q backend/tests/ravenous

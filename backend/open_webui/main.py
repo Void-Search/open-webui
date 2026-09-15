@@ -181,6 +181,8 @@ from open_webui.routers.retrieval import (
     get_reranking_function,
     get_rf,
 )
+from open_webui.ravenous_input.api import router as ravenous_input_router
+from open_webui.ravenous_input.grammar import start_checker, stop_checker
 from open_webui.socket.main import (
     MODELS,
     get_event_emitter,
@@ -353,6 +355,7 @@ async def lifespan(app: FastAPI):
 
     app.state.instance_id = INSTANCE_ID
     start_logger()
+    await start_checker()
 
     if RESET_CONFIG_ON_START:
         await async_reset_config()
@@ -463,6 +466,7 @@ async def lifespan(app: FastAPI):
     yield
 
     await publish_event(app, EVENTS.SYSTEM_SHUTDOWN_STARTED, source='system')
+    await stop_checker()
 
     # Shutdown: clean up shared resources
     from open_webui.utils.session_pool import close_session
@@ -827,6 +831,7 @@ app.include_router(images.router, prefix='/api/v1/images', tags=['images'])
 
 app.include_router(audio.router, prefix='/api/v1/audio', tags=['audio'])
 app.include_router(retrieval.router, prefix='/api/v1/retrieval', tags=['retrieval'])
+app.include_router(ravenous_input_router, prefix='/api/v1/ravenous/input', tags=['ravenous-input'])
 
 app.include_router(configs.router, prefix='/api/v1/configs', tags=['configs'])
 

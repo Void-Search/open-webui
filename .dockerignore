@@ -1,4 +1,8 @@
 .github
+.git
+.venv
+.pytest_cache
+backend/tests
 .DS_Store
 docs
 kubernetes

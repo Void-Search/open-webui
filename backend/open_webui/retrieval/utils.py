@@ -45,6 +45,7 @@ from open_webui.models.users import UserModel
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.external import retrieve_external_knowledge
+from open_webui.retrieval.ravenous_union_rerank import rerank_merged_result
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.main import GetResult, SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
@@ -700,6 +701,8 @@ async def query_collection(
     queries: list[str],
     embedding_function,
     k: int,
+    rerank_query: str | None = None,
+    hybrid: bool | None = None,
 ) -> dict:
     config = await Config.get_many(
         'rag.enable_hybrid_search',
@@ -709,7 +712,7 @@ async def query_collection(
         'rag.enable_hybrid_search_enriched_texts',
     )
     # When request is provided, try hybrid search + reranking if enabled
-    if request and config.get('rag.enable_hybrid_search'):
+    if request and hybrid is not False and config.get('rag.enable_hybrid_search'):
         try:
             reranking_function = (
                 (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents))
@@ -726,6 +729,7 @@ async def query_collection(
                 r=config.get('rag.relevance_threshold'),
                 hybrid_bm25_weight=config.get('rag.hybrid_bm25_weight'),
                 enable_enriched_texts=config.get('rag.enable_hybrid_search_enriched_texts'),
+                rerank_query=rerank_query,
             )
         except Exception as e:
             log.debug('Hybrid search failed, falling back to vector search: %s', e)
@@ -789,9 +793,22 @@ async def query_collection_with_hybrid_search(
     r: float,
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
+    rerank_query: str | None = None,
 ) -> dict:
     results = []
     error = False
+
+    async def finalize_results(query_results):
+        merged = merge_and_sort_query_results(query_results, k=k)
+        if len(queries) < 2:
+            return merged
+        return await rerank_merged_result(
+            merged,
+            query=rerank_query or queries[0],
+            reranking_function=reranking_function,
+            limit=k_reranker,
+            relevance_threshold=r,
+        )
 
     if not enable_enriched_texts:
 
@@ -812,7 +829,7 @@ async def query_collection_with_hybrid_search(
             *[process_native_query(collection_name, query) for collection_name in collection_names for query in queries]
         )
         if native_task_results and all(result is not None for result in native_task_results):
-            return merge_and_sort_query_results(native_task_results, k=k)
+            return await finalize_results(native_task_results)
 
     # Fetch every collection's contents once up front so the
     # per-query/per-document loop below can reuse them. Each fetch
@@ -876,7 +893,7 @@ async def query_collection_with_hybrid_search(
     if error and not results:
         raise Exception('Hybrid search failed for all collections. Using Non-hybrid search as fallback.')
 
-    return merge_and_sort_query_results(results, k=k)
+    return await finalize_results(results)
 
 
 def generate_openai_batch_embeddings(
@@ -1344,6 +1361,7 @@ async def get_sources_from_items(
     hybrid_search,
     full_context=False,
     user: UserModel | None = None,
+    rerank_query: str | None = None,
 ):
     log.debug('items: %s %s %s %s %s', items, queries, embedding_function, reranking_function, full_context)
 
@@ -1652,6 +1670,8 @@ async def get_sources_from_items(
                         queries=queries,
                         embedding_function=embedding_function,
                         k=k,
+                        rerank_query=rerank_query,
+                        hybrid=hybrid_search,
                     )
             except Exception as e:
                 log.exception(e)

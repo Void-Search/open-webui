@@ -3101,6 +3101,7 @@ async def query_collection_handler(
                     query, prefix=prefix, user=user
                 ),
                 k=form_data.k if form_data.k else config.TOP_K,
+                hybrid=False,
             )
 
     except HTTPException:
