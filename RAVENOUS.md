@@ -19,6 +19,8 @@ committed when updating dependencies; the Dockerfile follows upstream's
 requirements installation, including CPU-specific Torch wheels. Slim builds are
 the default: Ravenous prepares model caches in the same image on the application
 host. The application image contains no LanguageTool JVM or managed subprocess.
+The frontend build allows an 8 GiB Node heap; reserve additional memory for the
+other build processes. Override `--build-arg NODE_OPTIONS=...` when needed.
 
 LanguageTool is a separate HTTP service on either the same Docker network or
 another host. Set `RAVENOUS_LANGUAGETOOL_BASE_URL` (default
