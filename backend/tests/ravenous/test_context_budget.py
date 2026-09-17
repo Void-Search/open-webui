@@ -168,3 +168,40 @@ def test_local_provider_requires_exact_configured_base(monkeypatch):
 
     assert is_local_provider('http://llama.test/v1/') is True
     assert is_local_provider('http://other.test/v1') is False
+
+
+def test_shared_budget_skips_a_protected_turn_when_later_history_can_fit(monkeypatch):
+    configure(monkeypatch)
+    messages = [
+        {'role': 'user', 'content': 'protected history'},
+        {'role': 'developer', 'content': 'retained instructions'},
+        {'role': 'user', 'content': 'removable turn'},
+        {'role': 'assistant', 'content': 'removable response'},
+        {'role': 'user', 'content': 'latest'},
+    ]
+    result = run_budget({'messages': messages}, FakeClient(100, [90, 20]))
+    assert result.payload['messages'] == [messages[0], messages[1], messages[-1]]
+    assert result.trimmed_turns == 1
+
+
+def test_provider_call_without_client_owns_and_closes_http_client(monkeypatch):
+    from open_webui.ravenous_input import context
+
+    configure(monkeypatch)
+    client = FakeClient(100, [20])
+    closed = []
+
+    async def close():
+        closed.append(True)
+
+    client.aclose = close
+    monkeypatch.setattr(context.httpx, 'AsyncClient', lambda **kwargs: client)
+    result = asyncio.run(
+        enforce_context_budget(
+            {'messages': [{'role': 'user', 'content': 'latest'}]},
+            base_url='http://llama.test/v1',
+            api_key='test-key',
+        )
+    )
+    assert result.input_tokens == 20
+    assert closed == [True]

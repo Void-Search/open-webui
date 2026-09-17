@@ -497,80 +497,59 @@
 
 	// Error handler
 	const handleUploadError = (error) => {
-		if (error.name === 'AbortError') {
-			toast.info($i18n.t('Directory selection was cancelled'));
-		} else {
-			toast.error($i18n.t('Error accessing directory'));
-			console.error('Directory access error:', error);
-		}
+		toast.error($i18n.t('Error accessing directory'));
+		console.error('Directory access error:', error);
 	};
 
 	// Collect files from a directory without uploading.
 	const collectDirectoryFiles = async (): Promise<DirectoryFileEntry[] | null> => {
-		const isFileSystemAccessSupported = 'showDirectoryPicker' in window;
-
 		try {
-			if (isFileSystemAccessSupported) {
-				const dirHandle = await window.showDirectoryPicker();
-				const collected: DirectoryFileEntry[] = [];
+			return await new Promise<DirectoryFileEntry[] | null>((resolve, reject) => {
+				const input = document.createElement('input');
+				input.type = 'file';
+				input.webkitdirectory = true;
+				input.multiple = true;
+				input.style.display = 'none';
+				document.body.appendChild(input);
 
-				async function traverse(handle: FileSystemDirectoryHandle, dirPath = '') {
-					for await (const entry of handle.values()) {
-						if (entry.name.startsWith('.')) continue;
-						const entryPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
-						if (hasHiddenFolder(entryPath)) continue;
+				input.onchange = () => {
+					try {
+						const files = Array.from(input.files || []).filter(
+							(file) => !hasHiddenFolder(file.webkitRelativePath) && !file.name.startsWith('.')
+						);
 
-						if (entry.kind === 'file') {
-							const file = await entry.getFile();
-							collected.push({ path: dirPath, filename: entry.name, file });
-						} else if (entry.kind === 'directory') {
-							await traverse(entry, entryPath);
-						}
-					}
-				}
+						const collected = files.map((file) => {
+							const parts = file.webkitRelativePath.split('/');
+							const filename = parts.pop() || file.name;
+							const path = parts.join('/');
+							return { path, filename, file };
+						});
 
-				await traverse(dirHandle, dirHandle.name);
-				return collected;
-			} else {
-				// Firefox fallback
-				return new Promise((resolve, reject) => {
-					const input = document.createElement('input');
-					input.type = 'file';
-					input.webkitdirectory = true;
-					input.directory = true;
-					input.multiple = true;
-					input.style.display = 'none';
-					document.body.appendChild(input);
-
-					input.onchange = () => {
-						try {
-							const files = Array.from(input.files || []).filter(
-								(file) => !hasHiddenFolder(file.webkitRelativePath) && !file.name.startsWith('.')
-							);
-
-							const collected = files.map((file) => {
-								const parts = file.webkitRelativePath.split('/');
-								const filename = parts.pop() || file.name;
-								const path = parts.join('/');
-								return { path, filename, file };
-							});
-
-							document.body.removeChild(input);
-							resolve(collected);
-						} catch (error) {
-							document.body.removeChild(input);
-							reject(error);
-						}
-					};
-
-					input.onerror = (error) => {
-						document.body.removeChild(input);
+						input.remove();
+						resolve(collected);
+					} catch (error) {
+						input.remove();
 						reject(error);
-					};
+					}
+				};
 
+				input.onerror = (error) => {
+					input.remove();
+					reject(error);
+				};
+
+				input.oncancel = () => {
+					input.remove();
+					resolve(null);
+				};
+
+				try {
 					input.click();
-				});
-			}
+				} catch (error) {
+					input.remove();
+					reject(error);
+				}
+			});
 		} catch (error) {
 			handleUploadError(error);
 			return null;
@@ -649,6 +628,9 @@
 
 				failedCount++;
 				console.error('Upload failed:', displayPath, reason);
+				if (failedCount === 1) {
+					toast.error(`${displayPath}: ${reason}`, { duration: 10000 });
+				}
 			}
 		}
 

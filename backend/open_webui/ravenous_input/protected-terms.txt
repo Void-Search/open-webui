@@ -1,8 +1,2 @@
-# Ravenous prompt-protection glossary, version 1.
-LanguageTool
-Open WebUI
-Qwen
-Qwen3
-Ravenous LLM
-llama.cpp
-pgvector
+# Retired: canonical terms are packaged in ravenous_common/protected-terms.txt.
+# This compatibility path is not read by the Open WebUI adapters.

@@ -170,6 +170,15 @@ RUN set -e; \
     if [ -d /app/backend/data/cache ]; then chmod -R a+rX /app/backend/data/cache; fi; \
     rm -rf /var/lib/apt/lists/*;
 
+# Install the versioned ravenous_common shared package supplied through the
+# "ravenous_common" named build context (built by `./scripts/stack package
+# wheel`; see RAVENOUS.md). This installs a wheel only; it is not the retired
+# apply_patch.py mechanism.
+COPY --from=ravenous_common / /tmp/ravenous-common-wheel/
+RUN uv pip install --system --no-deps /tmp/ravenous-common-wheel/*.whl \
+    && pip3 check \
+    && rm -rf /tmp/ravenous-common-wheel
+
 # Optional: PPTX parsing through unstructured may need spaCy's English model.
 # Keep this out of the default image to avoid the extra image bloat; deployments
 # with read-only site-packages can uncomment it and bake the model in.

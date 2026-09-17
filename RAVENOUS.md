@@ -1,17 +1,29 @@
 # Ravenous application customisations
 
-This fork owns input preparation, protected terms, llama.cpp context budgeting,
-and final union reranking. These are direct backend source changes; image builds
+This fork owns the Open WebUI adapters and final union reranking. Input preparation,
+protected terms, grammar lifecycle and llama.cpp context-budget algorithms live in
+the versioned `ravenous_common` wheel. Fork modules are compatibility re-exports or
+small request-context adapters, not duplicate implementations. These are direct backend source changes; image builds
 do not apply a patch script. Upstream frontend, API version reporting, migrations,
 and `/app/backend/data` storage conventions are preserved.
 
-Build from a clean committed checkout:
+Build a deployment from the parent Ravenous repository with clean committed inputs:
 
 ```sh
-revision=$(git rev-parse HEAD)
-docker build --build-arg SOURCE_REVISION="$revision" \
-  --build-arg BUILD_HASH="$revision" -t "ravenous-openwebui:$revision" .
+./scripts/stack build --host config/hosts/machine.local.yaml
+./scripts/stack deploy --host config/hosts/machine.local.yaml
 ```
+
+The parent build command supplies the named context automatically using a tracked
+source snapshot and `.generated/<project>/dist`, containing the common wheel.
+It records application, common-package, Dockerfile, dependency and base identities
+in a project-local manifest and uses fingerprint tags. Raw `docker compose build`
+does not create that deployment handoff. Standalone `stack package wheel` remains
+a development command using `.generated/dist`.
+That directory holds only the built wheel, never host configuration, models,
+uploads, or other generated output. `package wheel` also checks that the host's
+Docker CLI and Compose support named build contexts (BuildKit `--build-context`,
+Compose >=2.17) before building anything.
 
 The Dockerfile builds the frontend with `npm ci` and installs the backend's
 version-pinned requirements. Keep `package-lock.json` and upstream `uv.lock`
@@ -41,11 +53,12 @@ the `/props` and `/v1/chat/completions/input_tokens` context-budget APIs. Set it
 to the same reachable URL used by the OpenAI provider, including `/v1`, even
 when the inference server runs on another host.
 
-Run the application regression tests from the repository root:
+Run the application regression tests from the parent Ravenous repository root:
 
 ```sh
-python -m pip install -r backend/tests/ravenous/requirements.txt
-PYTHONPATH=backend python -m pytest backend/tests/ravenous
+python -m pip install -e services/common
+python -m pip install -r third_party/open-webui/backend/tests/ravenous/requirements.txt
+PYTHONPATH=third_party/open-webui/backend python -m pytest third_party/open-webui/backend/tests/ravenous
 ```
 
 These focused tests require pytest, httpx, typer, and uvicorn; full application

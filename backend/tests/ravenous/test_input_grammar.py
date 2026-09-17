@@ -2,8 +2,8 @@
 
 import asyncio
 
-from open_webui.ravenous_input import grammar
 from open_webui.ravenous_input.settings import InputSettings
+from ravenous_common import grammar
 
 
 class FakeResponse:

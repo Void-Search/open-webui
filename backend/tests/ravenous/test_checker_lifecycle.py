@@ -4,7 +4,7 @@ import asyncio
 
 import httpx
 import pytest
-from open_webui.ravenous_input import grammar
+from ravenous_common import grammar
 
 
 @pytest.fixture(autouse=True)

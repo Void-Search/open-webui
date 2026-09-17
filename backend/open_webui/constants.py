@@ -13,7 +13,7 @@ _ERRNO_MESSAGES = {
 }
 
 
-def _error_message(err='', fallback='') -> str:
+def _error_message(err: str | Exception = '', fallback: str = '') -> str:
     if not err:
         return 'Something went wrong :/'
     if isinstance(err, OSError) and err.errno in _ERRNO_MESSAGES:
