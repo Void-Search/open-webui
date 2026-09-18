@@ -51,7 +51,14 @@ from open_webui.models.notes import Notes
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.users import UserModel, Users
 from open_webui.ravenous_input.pipeline import prepare_request_prompt
-from open_webui.retrieval.ravenous_union_rerank import prepare_retrieval_queries
+from open_webui.retrieval.ravenous_union_rerank import (
+    RETRIEVAL_ASSESSMENT_KEY,
+    filter_retrieval_sources,
+    load_clarification_threshold,
+    prepare_retrieval_queries,
+    retrieval_response_instruction,
+    summarize_retrieval_sources,
+)
 from open_webui.retrieval.utils import get_sources_from_items
 from open_webui.routers.images import (
     CreateImageForm,
@@ -1990,10 +1997,11 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
 
 async def chat_completion_files_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel
-) -> tuple[dict, dict[str, list]]:
+) -> tuple[dict, dict[str, Any]]:
     __event_emitter__ = extra_params['__event_emitter__']
     sources = []
     rerank_query = None
+    retrieval_assessment = None
 
     files = [item for item in (body.get('metadata', {}).get('files', None) or []) if item.get('type') != 'filesystem']
     if files:
@@ -2085,6 +2093,13 @@ async def chat_completion_files_handler(
         except Exception as e:
             log.exception(e)
 
+        retrieval_assessment = summarize_retrieval_sources(
+            sources, load_clarification_threshold()
+        )
+        sources = filter_retrieval_sources(sources, load_clarification_threshold())
+        for source in sources:
+            source.pop(RETRIEVAL_ASSESSMENT_KEY, None)
+
         log.debug('rag_contexts:sources: %s', sources)
 
         unique_ids = set()
@@ -2113,7 +2128,11 @@ async def chat_completion_files_handler(
             }
         )
 
-    return body, {'sources': sources, 'rag_query': rerank_query}
+    return body, {
+        'sources': sources,
+        'rag_query': rerank_query,
+        'retrieval_assessment': retrieval_assessment,
+    }
 
 
 async def convert_url_images_to_base64(form_data, user=None):
@@ -3072,11 +3091,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
     rag_query = prompt
+    retrieval_assessment = None
     if file_context_enabled:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
             sources.extend(flags.get('sources', []))
             rag_query = flags.get('rag_query') or rag_query
+            retrieval_assessment = flags.get('retrieval_assessment')
         except Exception as e:
             log.exception(e)
 
@@ -3098,10 +3119,30 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     metadata['user_prompt'] = get_last_user_message(form_data['messages'])
     metadata['sources'] = sources[:] if sources else []
 
-    # If context is not empty, insert it into the messages
-    if sources and prompt:
+    # File retrieval cannot veto independent context from tools or web search.
+    # Weak file passages have already been removed by filter_retrieval_sources.
+    if (
+        retrieval_assessment
+        and retrieval_assessment.get('clarify')
+        and any(source.get('document') for source in sources)
+    ):
+        retrieval_assessment = None
+
+    should_clarify = bool(retrieval_assessment and retrieval_assessment.get('clarify'))
+
+    # Do not expose weak passages to the answer model: once the numerical gate
+    # selects clarification, plausible-looking context can override that policy.
+    if sources and prompt and not should_clarify:
         form_data['messages'] = await apply_source_context_to_messages(
             request, form_data['messages'], sources, rag_query
+        )
+
+    # Keep retrieval-status guidance last so it takes precedence over the
+    # general answer template. This also covers empty-context clarification.
+    retrieval_instruction = retrieval_response_instruction(retrieval_assessment)
+    if retrieval_instruction:
+        form_data['messages'] = add_or_update_system_message(
+            retrieval_instruction, form_data['messages'], append=True
         )
 
     # If there are citations, add them to the data_items

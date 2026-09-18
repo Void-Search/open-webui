@@ -45,7 +45,11 @@ from open_webui.models.users import UserModel
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.external import retrieve_external_knowledge
-from open_webui.retrieval.ravenous_union_rerank import rerank_merged_result
+from open_webui.retrieval.ravenous_union_rerank import (
+    RETRIEVAL_ASSESSMENT_KEY,
+    failed_retrieval_result,
+    rerank_merged_result,
+)
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.retrieval.vector.main import GetResult, SearchResult
 from open_webui.retrieval.web.utils import get_web_loader
@@ -704,6 +708,7 @@ async def query_collection(
     rerank_query: str | None = None,
     hybrid: bool | None = None,
 ) -> dict:
+    hybrid_failed = False
     config = await Config.get_many(
         'rag.enable_hybrid_search',
         'rag.top_k_reranker',
@@ -733,6 +738,7 @@ async def query_collection(
             )
         except Exception as e:
             log.debug('Hybrid search failed, falling back to vector search: %s', e)
+            hybrid_failed = True
 
     results = []
     error = False
@@ -780,7 +786,12 @@ async def query_collection(
     if error and not results:
         log.warning('All collection queries failed. No results returned.')
 
-    return merge_and_sort_query_results(results, k=k)
+    merged = merge_and_sort_query_results(results, k=k)
+    if hybrid_failed:
+        return failed_retrieval_result(merged, 'hybrid_retrieval_failed')
+    if error and not results:
+        return failed_retrieval_result(merged, 'vector_retrieval_failed')
+    return merged
 
 
 async def query_collection_with_hybrid_search(
@@ -800,8 +811,6 @@ async def query_collection_with_hybrid_search(
 
     async def finalize_results(query_results):
         merged = merge_and_sort_query_results(query_results, k=k)
-        if len(queries) < 2:
-            return merged
         return await rerank_merged_result(
             merged,
             query=rerank_query or queries[0],
@@ -1675,6 +1684,10 @@ async def get_sources_from_items(
                     )
             except Exception as e:
                 log.exception(e)
+                query_result = failed_retrieval_result(
+                    {'distances': [[]], 'documents': [[]], 'metadatas': [[]]},
+                    'collection_retrieval_failed',
+                )
 
             extracted_collections.extend(collection_names)
 
@@ -1695,6 +1708,10 @@ async def get_sources_from_items(
                     }
                     if 'distances' in query_result and query_result['distances']:
                         source['distances'] = query_result['distances'][0]
+                    if RETRIEVAL_ASSESSMENT_KEY in query_result:
+                        source[RETRIEVAL_ASSESSMENT_KEY] = query_result[
+                            RETRIEVAL_ASSESSMENT_KEY
+                        ]
 
                     sources.append(source)
         except Exception as e:
