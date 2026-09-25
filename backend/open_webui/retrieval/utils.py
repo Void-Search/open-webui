@@ -639,7 +639,7 @@ def merge_get_results(get_results: list[dict]) -> dict:
     return result
 
 
-def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
+def merge_and_sort_query_results(query_results: list[dict], k: int, candidate_only: bool = False) -> dict:
     # Initialize lists to store combined data
     combined = dict()  # To store documents with unique document hashes
 
@@ -658,6 +658,11 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
         for distance, document, metadata in zip(distances, documents, metadatas):
             if isinstance(document, str):
                 doc_hash = (metadata or {}).get(CHUNK_HASH_KEY) or _content_hash(document)
+                if candidate_only:
+                    # Defer cross-source content deduplication until the joint
+                    # pool can retain all of the original citation provenance.
+                    meta = metadata or {}
+                    doc_hash = (doc_hash, meta.get('file_id') or meta.get('source') or meta.get('name'))
 
                 if doc_hash not in combined:
                     combined[doc_hash] = (distance, document, metadata)
@@ -670,6 +675,18 @@ def merge_and_sort_query_results(query_results: list[dict], k: int) -> dict:
     combined = list(combined.values())
     # Sort the list based on distances
     combined.sort(key=lambda x: x[0], reverse=True)
+    if candidate_only:
+        groups = {}
+        for row in combined:
+            meta = row[2] or {}
+            identity = meta.get('file_id') or meta.get('source') or meta.get('name') or _content_hash(row[1])
+            groups.setdefault(identity, []).append(row)
+        combined = [
+            group[index]
+            for index in range(max((len(group) for group in groups.values()), default=0))
+            for group in groups.values()
+            if index < len(group)
+        ]
 
     # Slice to keep only the top k elements
     sorted_distances, sorted_documents, sorted_metadatas = zip(*combined[:k]) if combined else ([], [], [])
@@ -707,6 +724,7 @@ async def query_collection(
     k: int,
     rerank_query: str | None = None,
     hybrid: bool | None = None,
+    candidate_only: bool = False,
 ) -> dict:
     hybrid_failed = False
     config = await Config.get_many(
@@ -721,7 +739,7 @@ async def query_collection(
         try:
             reranking_function = (
                 (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents))
-                if request.app.state.RERANKING_FUNCTION
+                if request.app.state.RERANKING_FUNCTION and not candidate_only
                 else None
             )
             return await query_collection_with_hybrid_search(
@@ -730,11 +748,12 @@ async def query_collection(
                 embedding_function=embedding_function,
                 k=k,
                 reranking_function=reranking_function,
-                k_reranker=config.get('rag.top_k_reranker'),
-                r=config.get('rag.relevance_threshold'),
+                k_reranker=k if candidate_only else config.get('rag.top_k_reranker'),
+                r=0 if candidate_only else config.get('rag.relevance_threshold'),
                 hybrid_bm25_weight=config.get('rag.hybrid_bm25_weight'),
                 enable_enriched_texts=config.get('rag.enable_hybrid_search_enriched_texts'),
                 rerank_query=rerank_query,
+                candidate_only=candidate_only,
             )
         except Exception as e:
             log.debug('Hybrid search failed, falling back to vector search: %s', e)
@@ -786,7 +805,7 @@ async def query_collection(
     if error and not results:
         log.warning('All collection queries failed. No results returned.')
 
-    merged = merge_and_sort_query_results(results, k=k)
+    merged = merge_and_sort_query_results(results, k=k, candidate_only=candidate_only)
     if hybrid_failed:
         return failed_retrieval_result(merged, 'hybrid_retrieval_failed')
     if error and not results:
@@ -805,12 +824,13 @@ async def query_collection_with_hybrid_search(
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
     rerank_query: str | None = None,
+    candidate_only: bool = False,
 ) -> dict:
     results = []
     error = False
 
     async def finalize_results(query_results):
-        merged = merge_and_sort_query_results(query_results, k=k)
+        merged = merge_and_sort_query_results(query_results, k=k, candidate_only=candidate_only)
         return await rerank_merged_result(
             merged,
             query=rerank_query or queries[0],
@@ -1371,6 +1391,7 @@ async def get_sources_from_items(
     full_context=False,
     user: UserModel | None = None,
     rerank_query: str | None = None,
+    candidate_only: bool = False,
 ):
     log.debug('items: %s %s %s %s %s', items, queries, embedding_function, reranking_function, full_context)
 
@@ -1487,12 +1508,19 @@ async def get_sources_from_items(
                     }
 
         elif item.get('type') == 'url':
-            content, docs = await get_content_from_url(request, item.get('url'))
-            if docs:
-                query_result = {
-                    'documents': [[content]],
-                    'metadatas': [[{'url': item.get('url'), 'name': item.get('url')}]],
-                }
+            if candidate_only:
+                # Joint research sends all public acquisition through the bounded,
+                # authenticated web branch. Local retrieval must not fetch URLs.
+                query_result = failed_retrieval_result(
+                    {'documents': [[]], 'metadatas': [[]]}, 'remote_attachment_requires_web'
+                )
+            else:
+                content, docs = await get_content_from_url(request, item.get('url'))
+                if docs:
+                    query_result = {
+                        'documents': [[content]],
+                        'metadatas': [[{'url': item.get('url'), 'name': item.get('url')}]],
+                    }
         elif item.get('type') == 'file':
             if item.get('context') == 'full' or bypass_embedding_and_retrieval:
                 if item.get('file', {}).get('data', {}).get('content', ''):
@@ -1570,13 +1598,18 @@ async def get_sources_from_items(
                 or ('collection', item.get('id')) in folder_items
             ):
                 if (knowledge_base.meta or {}).get('source') == 'external':
-                    query_result = await retrieve_external_knowledge(
-                        request,
-                        knowledge_base,
-                        queries=queries,
-                        count=k,
-                        user=user,
-                    )
+                    if candidate_only:
+                        query_result = failed_retrieval_result(
+                            {'documents': [[]], 'metadatas': [[]]}, 'external_collection_skipped'
+                        )
+                    else:
+                        query_result = await retrieve_external_knowledge(
+                            request,
+                            knowledge_base,
+                            queries=queries,
+                            count=k,
+                            user=user,
+                        )
                     extracted_collections.append(knowledge_base.id)
 
                 else:
@@ -1681,6 +1714,7 @@ async def get_sources_from_items(
                         k=k,
                         rerank_query=rerank_query,
                         hybrid=hybrid_search,
+                        candidate_only=candidate_only,
                     )
             except Exception as e:
                 log.exception(e)

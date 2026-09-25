@@ -195,7 +195,14 @@ def test_provider_call_without_client_owns_and_closes_http_client(monkeypatch):
         closed.append(True)
 
     client.aclose = close
-    monkeypatch.setattr(context.httpx, 'AsyncClient', lambda **kwargs: client)
+    monkeypatch.setenv('RAVENOUS_INPUT_CONTEXT_TIMEOUT_SECONDS', '10')
+    client_options = []
+
+    def create_client(**kwargs):
+        client_options.append(kwargs)
+        return client
+
+    monkeypatch.setattr(context.httpx, 'AsyncClient', create_client)
     result = asyncio.run(
         enforce_context_budget(
             {'messages': [{'role': 'user', 'content': 'latest'}]},
@@ -205,3 +212,4 @@ def test_provider_call_without_client_owns_and_closes_http_client(monkeypatch):
     )
     assert result.input_tokens == 20
     assert closed == [True]
+    assert client_options == [{'timeout': 10, 'trust_env': False}]

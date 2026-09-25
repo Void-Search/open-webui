@@ -3574,7 +3574,10 @@
 					// Direct terminal servers — always included when enabled (not routed through selectedToolIds)
 					...($terminalServers ?? []).filter((t) => !t.id)
 				],
-				features: getFeatures(),
+				features: {
+					...getFeatures(),
+					...(userMessage?.research_recovery ? { web_search: true } : {})
+				},
 				variables: {
 					...getPromptVariables(
 						$user?.name,
@@ -3777,7 +3780,7 @@
 		}
 	};
 
-	const submitMessage = async (parentId, prompt) => {
+	const submitMessage = async (parentId, prompt, options: { research?: boolean } = {}) => {
 		let userPrompt = prompt;
 		let userMessageId = uuidv4();
 
@@ -3788,6 +3791,7 @@
 			role: 'user',
 			content: userPrompt,
 			models: selectedModels,
+			...(options.research ? { research_recovery: true } : {}),
 			timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 		};
 

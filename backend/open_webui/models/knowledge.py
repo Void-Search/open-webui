@@ -267,6 +267,7 @@ class KnowledgeTable:
         skip: int = 0,
         limit: int = 30,
         db: Optional[AsyncSession] = None,
+        raise_on_error: bool = False,
     ) -> KnowledgeListResponse:
         try:
             async with get_async_db_context(db) as db:
@@ -364,6 +365,8 @@ class KnowledgeTable:
 
                 return KnowledgeListResponse(items=knowledge_bases, total=total)
         except Exception as e:
+            if raise_on_error:
+                raise
             print(e)
             return KnowledgeListResponse(items=[], total=0)
 

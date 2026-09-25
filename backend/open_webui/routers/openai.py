@@ -1617,13 +1617,28 @@ async def generate_chat_completion(
     if not is_streaming_request:
         payload.pop('stream_options', None)
 
+    from open_webui.ravenous_research.context import probing as research_probing
+
+    if research_probing.get() and not is_local_provider(url):
+        raise ContextBudgetError('Context counting is unavailable for this model')
     if is_local_provider(url):
+        if (metadata or {}).get('ravenous_execution_required') and isinstance(payload.get('tool_choice'), dict):
+            # This local model can emit prose in thinking mode despite a named
+            # tool choice. Constrain the required execution turn to the tool.
+            payload['chat_template_kwargs'] = {**payload.get('chat_template_kwargs', {}), 'enable_thinking': False}
         try:
             budget = await enforce_context_budget(payload, base_url=url, api_key=key)
         except ContextBudgetError as e:
+            if research_probing.get():
+                raise
             raise HTTPException(status_code=400, detail=str(e)) from e
         payload = budget.payload
+        if research_probing.get():
+            return {'research_context_checked': True, 'payload': payload}
 
+    if (metadata or {}).get('ravenous_execution_required'):
+        log.info('Required code tool dispatch: choice=%s, tools=%s',
+                 payload.get('tool_choice'), len(payload.get('tools', [])))
     payload = JSONCodec.dumps(payload)
 
     r = None

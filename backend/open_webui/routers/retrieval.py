@@ -99,7 +99,7 @@ from open_webui.retrieval.web.kagi import search_kagi
 from open_webui.retrieval.web.utils import get_ssrf_safe_session, validate_url
 
 # Web search engines
-from open_webui.retrieval.web.main import SearchResult
+from open_webui.retrieval.web.main import SearchResult, get_filtered_results
 from open_webui.retrieval.web.microsoft_web_iq import search_microsoft_web_iq
 from open_webui.retrieval.web.mojeek import search_mojeek
 from open_webui.retrieval.web.ollama import search_ollama_cloud
@@ -461,7 +461,9 @@ class ProcessUrlResponse(BaseModel):
 
 
 class SearchForm(BaseModel):
+    question: str | None = None
     queries: list[str]
+    source_domains: list[str] | None = None
 
 
 @router.get('/embedding')
@@ -2449,6 +2451,14 @@ async def search_web(request: Request, engine: str, query: str, user=None) -> li
 
     # TODO: add playwright to search the web
     config = await get_retrieval_config()
+    if engine == 'ravenous':
+        from open_webui.ravenous_research.web_tools import search
+        if not config.ENABLE_WEB_SEARCH:
+            raise HTTPException(403, 'Web search is disabled')
+        results = await search(user, query, config.WEB_SEARCH_RESULT_COUNT)
+        return [SearchResult(**item) for item in get_filtered_results(
+            results, config.WEB_SEARCH_DOMAIN_FILTER_LIST
+        )]
     if engine == 'ollama_cloud':
         return await asyncio.to_thread(
             search_ollama_cloud,
@@ -2809,6 +2819,14 @@ async def process_web_search(request: Request, form_data: SearchForm, user=Depen
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    if config.WEB_SEARCH_ENGINE == 'ravenous':
+        from open_webui.ravenous_research.web_tools import process
+        return await process(
+            user, form_data.queries, config.WEB_SEARCH_RESULT_COUNT,
+            config.WEB_SEARCH_DOMAIN_FILTER_LIST, form_data.question,
+            form_data.source_domains, request,
         )
 
     urls = []

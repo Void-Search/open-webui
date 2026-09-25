@@ -26,6 +26,7 @@
 	const i18n = getContext<Writable<i18nType>>('i18n');
 
 	let loaded = false;
+	let researchEnabled = false;
 	let lastPath = '';
 	let activeWorkspaceSection = '';
 	let visibleActions = [];
@@ -78,6 +79,13 @@
 	};
 
 	onMount(async () => {
+		researchEnabled = await fetch('/api/v1/ravenous/research/config', {
+			headers: { Authorization: `Bearer ${localStorage.token}` }
+		})
+			.then((response) => (response.ok ? response.json() : {}))
+			.then((value: { enabled?: boolean }) => value.enabled === true)
+			.catch(() => false);
+
 		if ($user?.role !== 'admin') {
 			if ($page.url.pathname.includes('/models') && !$user?.permissions?.workspace?.models) {
 				goto('/', { replaceState: true });
@@ -165,6 +173,9 @@
 							</a>
 						{/if}
 
+						{#if researchEnabled}
+							<a class="min-w-fit px-1 text-sm" href="/workspace/research">Research</a>
+						{/if}
 						{#if $user?.role === 'admin' || $user?.permissions?.workspace?.knowledge}
 							<a
 								draggable="false"
@@ -175,7 +186,7 @@
 									: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition select-none"
 								href="/workspace/knowledge"
 							>
-								<span>{$i18n.t('Knowledge')}</span>
+								<span>{researchEnabled ? 'Legacy knowledge' : $i18n.t('Knowledge')}</span>
 								<span class="text-sm opacity-60">
 									{formatCount($workspaceCounts.knowledge)}
 								</span>

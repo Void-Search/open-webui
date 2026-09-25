@@ -1507,6 +1507,10 @@ async def chat_completion_tools_handler(
 
 
 async def chat_web_search_handler(request: Request, form_data: dict, extra_params: dict, user):
+    ravenous = await Config.get('web.search.engine') == 'ravenous'
+    if ravenous:
+        from open_webui.ravenous_research.pipeline import run
+        return await run(request, form_data, extra_params, user)
     event_emitter = extra_params['__event_emitter__']
     await event_emitter(
         {
@@ -1521,6 +1525,7 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
 
     messages = form_data['messages']
     user_message = get_last_user_message(messages)
+    research_question = user_message
 
     queries = []
     try:
@@ -1529,7 +1534,7 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
             {
                 'model': form_data['model'],
                 'messages': messages,
-                'prompt': user_message,
+                'prompt': research_question,
                 'type': 'web_search',
                 'chat_id': extra_params.get('__chat_id__'),
             },
@@ -1568,11 +1573,11 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
 
     except Exception as e:
         log.exception(e)
-        queries = [user_message or '']
+        queries = [research_question or '']
 
     # Check if generated queries are empty
     if len(queries) == 1 and queries[0].strip() == '':
-        queries = [user_message or '']
+        queries = [research_question or '']
 
     # Check if queries are not found
     if len(queries) == 0:
@@ -1588,21 +1593,13 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
         )
         return form_data
 
-    await event_emitter(
-        {
-            'type': 'status',
-            'data': {
-                'action': 'web_search_queries_generated',
-                'queries': queries,
-                'done': False,
-            },
-        }
-    )
+    await event_emitter({'type': 'status', 'data': {
+        'action': 'web_search_queries_generated', 'queries': queries, 'done': False}})
 
     try:
         results = await process_web_search(
             request,
-            SearchForm(queries=queries),
+            SearchForm(queries=queries, question=research_question),
             user=user,
         )
 
@@ -1640,7 +1637,7 @@ async def chat_web_search_handler(request: Request, form_data: dict, extra_param
                     'type': 'status',
                     'data': {
                         'action': 'web_search',
-                        'description': 'Searched {{count}} sites',
+                        'description': results.get('research_notice', 'Searched {{count}} sites'),
                         'urls': results['filenames'],
                         'items': results.get('items', []),
                         'done': True,
@@ -1998,6 +1995,11 @@ async def chat_image_generation_handler(request: Request, form_data: dict, extra
 async def chat_completion_files_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel
 ) -> tuple[dict, dict[str, Any]]:
+    if body.get('metadata', {}).get('ravenous_retrieval_complete'):
+        return body, {
+            'sources': body['metadata'].get('ravenous_retrieval_sources', []),
+            'rag_query': body['metadata'].get('ravenous_research_context', {}).get('query'),
+        }
     __event_emitter__ = extra_params['__event_emitter__']
     sources = []
     rerank_query = None
@@ -2716,9 +2718,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 'features.web_search',
                 await Config.get('user.permissions'),
             ):
-                # Skip forced RAG web search when native FC is enabled - model can use web_search tool
-                if metadata.get('params', {}).get('function_calling') == 'legacy':
+                # The Ravenous Web Search toggle requests acquisition, not merely
+                # permission for a model to choose a tool. Search before generation.
+                ravenous_search = await Config.get('web.search.engine') == 'ravenous'
+                if ravenous_search or metadata.get('params', {}).get('function_calling') == 'legacy':
                     form_data = await chat_web_search_handler(request, form_data, extra_params, user)
+                    if ravenous_search:
+                        # Evidence is already attached. Do not restart acquisition
+                        # through native search/fetch tools during this response.
+                        features['web_search'] = False
 
         if 'image_generation' in features and features['image_generation']:
             # features is client-supplied; re-check the permission the direct /images routes enforce.
@@ -3087,12 +3095,33 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 except Exception as e:
                     log.exception(e)
 
+    from open_webui.ravenous_research.quality import execution_requested, EXECUTION_GUIDANCE
+
+    log.info('Research execution policy: requested=%s, available=%s, mode=%s',
+             execution_requested(form_data['messages']), 'execute_code' in tools_dict,
+             metadata.get('params', {}).get('function_calling'))
+    if execution_requested(form_data['messages']):
+        form_data['messages'] = add_or_update_system_message(
+            EXECUTION_GUIDANCE, form_data['messages'], append=True
+        )
+        if 'execute_code' in tools_dict and metadata.get('params', {}).get('function_calling') != 'legacy':
+            form_data['tool_choice'] = {'type': 'function', 'function': {'name': 'execute_code'}}
+            metadata['ravenous_execution_required'] = True
+        else:
+            form_data['messages'] = add_or_update_system_message(
+                'Code execution is unavailable for this request. State that a verified benchmark was not run.',
+                form_data['messages'], append=True,
+            )
+
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
     rag_query = prompt
     retrieval_assessment = None
-    if file_context_enabled:
+    if metadata.get('ravenous_retrieval_complete'):
+        sources = [*metadata.get('ravenous_retrieval_sources', []), *sources]
+        rag_query = metadata.get('ravenous_research_context', {}).get('query') or rag_query
+    elif file_context_enabled:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
             sources.extend(flags.get('sources', []))
@@ -3132,7 +3161,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Do not expose weak passages to the answer model: once the numerical gate
     # selects clarification, plausible-looking context can override that policy.
-    if sources and prompt and not should_clarify:
+    if sources and prompt and not should_clarify and not metadata.get('ravenous_retrieval_complete'):
         form_data['messages'] = await apply_source_context_to_messages(
             request, form_data['messages'], sources, rag_query
         )
@@ -3144,16 +3173,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         form_data['messages'] = add_or_update_system_message(
             retrieval_instruction, form_data['messages'], append=True
         )
-
-    # If there are citations, add them to the data_items
-    sources = [
-        source
-        for source in sources
-        if source.get('source', {}).get('name', '') or source.get('source', {}).get('id', '')
-    ]
-
-    if len(sources) > 0:
-        events.append({'sources': sources})
 
     if model_knowledge:
         await event_emitter(
@@ -3182,6 +3201,25 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             raise Exception(f'{e}')
 
     form_data = normalize_messages_for_model(form_data)
+
+    if metadata.get('ravenous_retrieval_complete'):
+        from open_webui.ravenous_research.context import finalize as finalize_research_context
+
+        previous_count = len(metadata.get('ravenous_retrieval_sources', []))
+        selected_sources = await finalize_research_context(request, form_data, user, event_emitter)
+        sources = [*selected_sources, *sources[previous_count:]]
+        metadata['sources'] = sources[:]
+        # Tool iterations must restore the final, counted evidence selection.
+        system_message = get_system_message(form_data['messages'])
+        metadata['system_prompt'] = get_content_from_message(system_message) if system_message else None
+
+    sources = [
+        source
+        for source in sources
+        if source.get('source', {}).get('name', '') or source.get('source', {}).get('id', '')
+    ]
+    if sources:
+        events.append({'sources': sources})
 
     return form_data, metadata, events
 
@@ -3592,7 +3630,7 @@ def build_response_object(response, response_data):
     if isinstance(response, JSONResponse):
         return JSONResponse(
             content=response_data,
-            headers=response.headers,
+            headers={key: value for key, value in response.headers.items() if key.lower() != 'content-length'},
             status_code=response.status_code,
         )
     return response
@@ -4111,6 +4149,9 @@ async def non_streaming_chat_response_handler(response, ctx):
     response, response_data = get_response_data(response)
     if response_data is None:
         return response
+    from open_webui.ravenous_research.responses import finish_json
+    response_data = finish_json(response_data, metadata)
+    response = build_response_object(response, response_data)
 
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
@@ -5945,7 +5986,8 @@ async def streaming_chat_response_handler(response, ctx):
                             # tool sources as citation markers only.
                             source_ids = {}
                             source_context = get_source_context(
-                                metadata.get('sources', []), source_ids
+                                metadata.get('sources', []), source_ids,
+                                include_content=not metadata.get('ravenous_retrieval_complete', False),
                             ) + get_source_context(
                                 all_tool_call_sources,
                                 source_ids,
@@ -5991,6 +6033,16 @@ async def streaming_chat_response_handler(response, ctx):
                             },
                         }
                     )
+
+                    if metadata.get('ravenous_research_no_evidence'):
+                        # A completed tool failure leads to a useful question, not
+                        # another unconstrained model answer with invented sources.
+                        output.append({'type': 'message', 'id': output_id('msg'),
+                                       'role': 'assistant', 'status': 'completed',
+                                       'content': [{'type': 'output_text',
+                                                    'text': metadata['ravenous_research_no_evidence']}]})
+                        tool_calls.clear()
+                        break
 
                     try:
                         new_form_data = {
@@ -6058,6 +6110,8 @@ async def streaming_chat_response_handler(response, ctx):
                                 extra_params=extra_params,
                             )
 
+                        if metadata.get('ravenous_execution_required'):
+                            new_form_data.pop('tool_choice', None)
                         new_form_data = normalize_messages_for_model(new_form_data)
 
                         res = await generate_chat_completion(
@@ -6300,6 +6354,8 @@ async def streaming_chat_response_handler(response, ctx):
                             await emit_message_error(error_content)
                             break
 
+                from open_webui.ravenous_research.conversation import finish_output
+                output = finish_output(output, metadata)
                 # Mark all in-progress items as completed
                 for item in output:
                     if item.get('status') == 'in_progress':
@@ -6446,8 +6502,12 @@ async def streaming_chat_response_handler(response, ctx):
                 ctx['assistant_message'] = assistant_message
                 await outlet_filter_handler(ctx)
 
+        from open_webui.ravenous_research.responses import question_stream
+        body = response.body_iterator
+        if any((metadata.get('ravenous_research') or {}).get(key) for key in ('question', 'response_notice')):
+            body = question_stream(body, metadata)
         return StreamingResponse(
-            stream_wrapper(response.body_iterator, events),
+            stream_wrapper(body, events),
             headers=dict(response.headers),
             background=response.background,
         )

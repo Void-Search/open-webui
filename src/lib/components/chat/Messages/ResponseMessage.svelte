@@ -56,6 +56,7 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import FollowUps from './ResponseMessage/FollowUps.svelte';
+	import ResearchActivity from './ResponseMessage/ResearchActivity.svelte';
 	import { fade } from 'svelte/transition';
 	import { flyAndScale } from '$lib/utils/transitions';
 	import RegenerateMenu from './ResponseMessage/RegenerateMenu.svelte';
@@ -184,6 +185,7 @@
 	$: model = $models.find((m) => m.id === message.model);
 
 	$: statusEntries = message?.statusHistory ?? [...(message?.status ? [message?.status] : [])];
+	$: researchEntries = statusEntries.filter((entry) => entry.action?.startsWith('research_'));
 	$: hasVisibleStatus =
 		(model?.info?.meta?.capabilities?.status_updates ?? true) &&
 		statusEntries.length > 0 &&
@@ -683,7 +685,17 @@
 			<div>
 				<div class="chat-{message.role} w-full min-w-full">
 					<div>
-						{#if model?.info?.meta?.capabilities?.status_updates ?? true}
+						{#if researchEntries.length > 0}
+							<ResearchActivity
+								entries={researchEntries}
+								content={visibleResponseContent}
+								messageId={message.id}
+								done={message.done}
+								active={isLastMessage}
+								{readOnly}
+								submit={async (reply) => { await submitMessage(message.id, reply, { research: true }); }}
+							/>
+						{:else if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
 						{/if}
 

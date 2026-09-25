@@ -37,6 +37,8 @@
 	export let questions: AskUserQuestion[] = [];
 	export let allowOther = true;
 	export let timeoutMs: number | null = null;
+	export let recommendFirst = true;
+	export let maxAnswerLength: number | undefined = undefined;
 
 	let answers: Record<string, DraftAnswer> = {};
 	let questionIndex = 0;
@@ -87,7 +89,7 @@
 			return answer?.type === 'option' || (answer?.type === 'other' && answer.text.trim() !== '');
 		});
 
-	$: complete = hasAnswers();
+	$: complete = hasAnswers(answers);
 
 	const submit = (selected = answers) => {
 		if (!hasAnswers(selected)) {
@@ -220,7 +222,7 @@
 												{option.description}
 											</span>
 										</Tooltip>
-										{#if optionIndex === 0}
+										{#if optionIndex === 0 && recommendFirst}
 											<span
 												class="shrink-0 rounded-full bg-gray-200/70 px-1.5 py-0.5 text-[0.625rem] text-gray-500 dark:bg-white/[0.08] dark:text-gray-400"
 											>
@@ -243,6 +245,7 @@
 									<input
 										class="min-w-0 flex-1 bg-transparent text-xs text-gray-800 outline-hidden placeholder:text-gray-400 dark:text-gray-100 dark:placeholder:text-gray-500"
 										placeholder={$i18n.t('Type your answer')}
+										maxlength={maxAnswerLength}
 										value={otherText(question)}
 										on:focus={() => selectOther(question)}
 										on:input={(event) =>

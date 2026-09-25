@@ -530,6 +530,8 @@ async def get_builtin_tools(
     builtin_functions = []
     features = features or {}
     model = model or {}
+    metadata = extra_params.get('__metadata__') or {}
+    researched = metadata.get('ravenous_retrieval_complete', False)
 
     # Helper to get model capabilities (defaults to True if not specified)
     def get_model_capability(name: str, default: bool = True) -> bool:
@@ -579,7 +581,7 @@ async def get_builtin_tools(
     if is_builtin_tool_enabled('time'):
         builtin_functions.extend([get_current_timestamp, calculate_timestamp])
 
-    if is_builtin_tool_enabled('user_input', True):
+    if is_builtin_tool_enabled('user_input', True) and not researched:
         builtin_functions.append(ask_user)
 
     metadata = extra_params.get('__metadata__') or {}
@@ -597,6 +599,7 @@ async def get_builtin_tools(
         and get_model_capability('file_upload')
         and not get_model_capability('file_context')
         and has_chat_files
+        and not researched
         and await has_user_chat_permission('file_upload')
     ):
         builtin_functions.extend([list_chat_files, query_chat_files, grep_chat_files, view_file])
@@ -605,7 +608,7 @@ async def get_builtin_tools(
     # If model has attached knowledge (any type), only provide query_knowledge_files
     # Otherwise, provide all KB browsing tools
     model_knowledge = get_attached_knowledge(model, metadata)
-    if is_builtin_tool_enabled('knowledge'):
+    if is_builtin_tool_enabled('knowledge') and not researched:
         from open_webui.env import ENABLE_KB_EXEC
 
         if ENABLE_KB_EXEC:

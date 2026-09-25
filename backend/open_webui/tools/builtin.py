@@ -295,12 +295,19 @@ async def search_web(
     count: Optional[int] = None,
     __request__: Request = None,
     __user__: dict = None,
+    __metadata__: dict = None,
+    __event_emitter__: callable = None,
 ) -> str:
     """
     Search the public web for information. Best for current events, external references,
     or topics not covered in internal documents.
 
-    :param query: The search query to look up
+    Ravenous reads pages and makes at most two searches, refining the query once.
+    Pass the full question with entity/date constraints. If information is missing,
+    answer only supported parts; the server appends a clarification for the user.
+    Do not repeatedly call this tool to evade its limit.
+
+    :param query: The full information need, including any freshness constraint
     :param count: Number of results to return (default: admin-configured value)
     :return: JSON with search results containing title, link, and snippet for each result
     """
@@ -314,6 +321,56 @@ async def search_web(
         configured = await Config.get('web.search.result_count')
         max_count = 5 if configured is None else configured
         count = max(1, min(count, max_count)) if count is not None else max_count
+
+        if engine == 'ravenous':
+            from open_webui.ravenous_research.web_tools import shared_research, assessment_notice, evidence_documents
+            from open_webui.ravenous_research.conversation import prepare_context, remember_result
+            from open_webui.ravenous_research.quality import unavailable_result, recovery_message
+            from open_webui.utils.access_control import has_permission
+
+            metadata = __metadata__ if __metadata__ is not None else {}
+            if (not await Config.get('web.search.enable') or metadata.get('task')
+                    or (metadata.get('features') or {}).get('web_search') is False):
+                raise HTTPException(403, 'Web search is disabled for this request')
+            if not user or (user.role != 'admin' and not await has_permission(
+                    user.id, 'features.web_search', await Config.get('user.permissions'))):
+                raise HTTPException(403, 'Web search permission is unavailable')
+            question = metadata.get('user_prompt') or query
+            model = metadata.get('model') or {}
+            context = await prepare_context(__request__, {
+                'model': model.get('id') if isinstance(model, dict) else model,
+                'messages': [{'role': 'user', 'content': question}], 'metadata': metadata,
+            }, user)
+            if context['cancelled']:
+                return JSONCodec.dumps({'status': 'cancelled', 'results': []})
+            if __event_emitter__:
+                await __event_emitter__({'type': 'status', 'data': {
+                    'action': 'web_search', 'description': 'Searching the web', 'done': False}})
+            try:
+                result = await shared_research(__request__, user, context['query'], count,
+                    await Config.get('web.search.domain.filter_list'), context['query'], context['source_domains'])
+            except HTTPException as exc:
+                if exc.status_code in (401, 403):
+                    raise
+                result = unavailable_result()
+            await remember_result(metadata, user, result)
+            notice = assessment_notice(result)
+            docs = evidence_documents(result)
+            if not docs:
+                metadata['ravenous_research_no_evidence'] = recovery_message(result)
+            if __event_emitter__:
+                await __event_emitter__({'type': 'status', 'data': {
+                    'action': 'web_search_queries_generated', 'done': True,
+                    'queries': [attempt['query'] for attempt in result.get('attempts', [])]}})
+                await __event_emitter__({'type': 'status', 'data': {
+                    'action': 'web_search', 'description': notice, 'done': True,
+                    'urls': [doc['metadata']['source'] for doc in docs]}})
+            items = [{'title': doc['metadata'].get('title'), 'link': doc['metadata']['source'],
+                      'snippet': doc['content']} for doc in docs]
+            return JSONCodec.dumps({'results': items, 'notice': notice,
+                'clarification_question': metadata['ravenous_research']['question'],
+                'instruction': 'Use only these supported passages. The server appends the question; do not repeat it.'},
+                ensure_ascii=False)
 
         results = await _search_web(__request__, engine, query, user)
 
@@ -344,7 +401,14 @@ async def fetch_url(
         return JSONCodec.dumps({'error': 'Request context not available'})
 
     try:
-        content, _ = await get_content_from_url(__request__, url)
+        if await Config.get('web.search.engine') == 'ravenous':
+            from open_webui.ravenous_research.web_tools import fetch
+            if not await Config.get('web.search.enable'):
+                return JSONCodec.dumps({'error': 'Web search is disabled'})
+            user = UserModel(**__user__) if __user__ else None
+            content = (await fetch(user, url))['text']
+        else:
+            content, _ = await get_content_from_url(__request__, url)
 
         # Truncate if configured (WEB_FETCH_MAX_CONTENT_LENGTH)
         # Guard: content may be None if the web loader silently failed
@@ -777,12 +841,9 @@ async def execute_code(
                             result_lines[idx] = f'![Output Image]({image_url})'
                 result = '\n'.join(result_lines)
 
-        response = {
-            'status': 'success',
-            'stdout': stdout,
-            'stderr': stderr,
-            'result': result,
-        }
+        from open_webui.ravenous_research.quality import execution_response
+
+        response = execution_response(stdout, stderr, result)
 
         return JSONCodec.dumps(response, ensure_ascii=False)
     except Exception as e:

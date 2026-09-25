@@ -18,6 +18,7 @@
 	export let saveHandler: Function;
 
 	let webSearchEngines = [
+		'ravenous',
 		'ollama_cloud',
 		'perplexity_search',
 		'searxng',
@@ -211,6 +212,8 @@
 						{#each webSearchEngines as engine}
 							{#if engine === 'duckduckgo' || engine === 'ddgs'}
 								<option value={engine}>DDGS</option>
+							{:else if engine === 'ravenous'}
+								<option value={engine}>Ravenous backend</option>
 							{:else if engine === 'serphouse'}
 								<option value={engine}>SERPHouse</option>
 							{:else}
@@ -219,6 +222,10 @@
 						{/each}
 					</SettingsSelect>
 				</AdminSettingRow>
+
+				{#if webConfig.WEB_SEARCH_ENGINE === 'ravenous'}
+					<p class="text-xs text-gray-500">Uses your research backend for search and page fetching. Your selected chat model writes the answer; native web loader and indexing settings are not used.</p>
+				{/if}
 
 				{#if webConfig.WEB_SEARCH_ENGINE !== ''}
 					{#if webConfig.WEB_SEARCH_ENGINE === 'ollama_cloud'}

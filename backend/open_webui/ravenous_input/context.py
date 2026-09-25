@@ -45,7 +45,9 @@ def reset_query_task_context(token: Token) -> None:
 async def enforce_context_budget(payload, *, base_url, api_key, client=None) -> ContextBudgetResult:
     settings = load_settings()
     task = _query_task_context.get()
-    active_client = client if client is not None else httpx.AsyncClient(trust_env=False)
+    active_client = client if client is not None else httpx.AsyncClient(
+        timeout=settings.context_timeout_seconds, trust_env=False
+    )
     try:
         return await asyncio.wait_for(
             common_context.enforce_context_budget(
