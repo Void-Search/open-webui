@@ -192,7 +192,8 @@ RUN --mount=from=ghcr.io/astral-sh/uv:0.12.10,source=/uv,target=/bin/uv \
 # wheel`; see RAVENOUS.md). This installs a wheel only; it is not the retired
 # apply_patch.py mechanism.
 COPY --from=ravenous_common / /tmp/ravenous-common-wheel/
-RUN uv pip install --system --no-deps /tmp/ravenous-common-wheel/*.whl \
+RUN --mount=from=ghcr.io/astral-sh/uv:0.12.10,source=/uv,target=/bin/uv \
+    uv pip install --system --no-deps /tmp/ravenous-common-wheel/*.whl \
     && pip3 check \
     && rm -rf /tmp/ravenous-common-wheel
 
