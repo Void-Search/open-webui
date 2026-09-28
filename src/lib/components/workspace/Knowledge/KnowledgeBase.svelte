@@ -328,10 +328,7 @@
 		for (const fileItem of newFileItems) {
 			try {
 				console.log(fileItem);
-				const res = await processUrl(localStorage.token, fileItem.url).catch((e) => {
-					console.error('Error processing URL:', e);
-					return null;
-				});
+				const res = await processUrl(localStorage.token, fileItem.url);
 
 				if (res) {
 					console.log(res);
@@ -351,9 +348,6 @@
 							knowledge_id: knowledge.id,
 							directory_id: currentDirectoryId,
 							source_url: fileItem.url
-						}).catch((e) => {
-							toast.error(`${e}`);
-							return null;
 						});
 					} else if (uploadedFile?.id) {
 						const linkedKnowledge = await addFileToKnowledgeById(
@@ -497,8 +491,12 @@
 
 	// Error handler
 	const handleUploadError = (error) => {
-		toast.error($i18n.t('Error accessing directory'));
-		console.error('Directory access error:', error);
+		if (error.name === 'AbortError') {
+			toast.info($i18n.t('Directory selection was cancelled'));
+		} else {
+			toast.error(`${$i18n.t('Error accessing directory')}: ${error.message}`);
+			console.error('Directory access error:', error);
+		}
 	};
 
 	// Collect files from a directory without uploading.
@@ -518,12 +516,19 @@
 							(file) => !hasHiddenFolder(file.webkitRelativePath) && !file.name.startsWith('.')
 						);
 
-						const collected = files.map((file) => {
-							const parts = file.webkitRelativePath.split('/');
-							const filename = parts.pop() || file.name;
-							const path = parts.join('/');
-							return { path, filename, file };
-						});
+						if (entry.kind === 'file') {
+							let file: File;
+							try {
+								file = await entry.getFile();
+							} catch (error) {
+								throw new Error(`"${entryPath}": ${error}`);
+							}
+							collected.push({ path: dirPath, filename: entry.name, file });
+						} else if (entry.kind === 'directory') {
+							await traverse(entry, entryPath);
+						}
+					}
+				}
 
 						input.remove();
 						resolve(collected);
@@ -1003,9 +1008,14 @@
 		}
 
 		if (entry.isFile) {
-			const file = await new Promise<File>((resolve, reject) => {
-				entry.file(resolve, reject);
-			});
+			let file: File;
+			try {
+				file = await new Promise<File>((resolve, reject) => {
+					entry.file(resolve, reject);
+				});
+			} catch (error) {
+				throw new Error(`"${entryPath}": ${error}`);
+			}
 			const parts = entryPath.split('/');
 			const filename = parts.pop() || file.name;
 			return [{ path: parts.join('/'), filename, file }];
@@ -1201,6 +1211,8 @@
 			share={$user?.permissions?.sharing?.knowledge || $user?.role === 'admin'}
 			sharePublic={$user?.permissions?.sharing?.public_knowledge || $user?.role === 'admin'}
 			shareUsers={($user?.permissions?.access_grants?.allow_users ?? true) ||
+				$user?.role === 'admin'}
+			allowGroups={($user?.permissions?.access_grants?.allow_groups ?? true) ||
 				$user?.role === 'admin'}
 			onChange={async () => {
 				try {
@@ -1411,13 +1423,7 @@
 											currentPage = 1;
 										}}
 									>
-										<Checkbox
-											state={includeContent ? 'checked' : 'unchecked'}
-											on:change={(e) => {
-												includeContent = e.detail === 'checked';
-												currentPage = 1;
-											}}
-										/>
+										<Checkbox state={includeContent ? 'checked' : 'unchecked'} />
 										{$i18n.t('File content')}
 									</button>
 								</DropdownMenu>
