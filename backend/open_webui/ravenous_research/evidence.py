@@ -83,12 +83,22 @@ def substantive_record(text):
     return False
 
 
-def quotation_records(item):
+def quotation_records(item, names=None):
     """Return complete bounded sections eligible for both verification and display."""
     records = item.get('original_records')
     if records is None:
         records = [record for _, _, record in source_records(item.get('original_excerpt', item['text']))]
+    def matches(record):
+        def normalized(text):
+            return ' ' + re.sub(r'\W+', ' ', text.casefold()).strip() + ' '
+
+        # A page title may identify the subject of a contact/details section.
+        # Generic directory labels cannot establish a requested named referent.
+        subject = set(normalized(item.get('source', {}).get('name', '') + '\n' + record).split())
+        return not names or any(set(normalized(name).split()) <= subject for name in names)
+
     return [record for record in records if len(record) <= 2000 and substantive_record(record)
+            and matches(record)
             and (item.get('metadata', {}).get('research_kind') != 'web'
                  or article_body_record(record, item.get('source_id', '')))]
 

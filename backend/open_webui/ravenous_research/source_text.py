@@ -7,6 +7,8 @@ UI_LABELS = {
     'advertisement', 'advertisements', 'advertising', 'skip to content',
     'skip to main content', 'menu', 'sign in', 'sign up', 'subscribe',
     'share', 'share this article', 'print', 'print this article',
+    'create event', 'create an event', 'open app', 'open in app', 'previous', 'next',
+    'check ticket price on event', 'explore more events', 'online events',
 }
 FOOTER_LABELS = {
     'related articles', 'related posts', 'recommended articles', 'read next',
@@ -117,7 +119,9 @@ def clean_web_text(text):
                 trim_footer_labels(kept)
             footer_level = len(heading[1]) if heading else 0
             continue
-        if plain in UI_LABELS or re.fullmatch(r'(?:send me (?:the )?\w+|unsubscribe whenever[^.!]*[.!]?|[^.!?]{1,70} starts here)', plain):
+        if (plain in UI_LABELS
+                or re.match(r'^(?:save|share) this (?:event|article|post)\s*:', plain)
+                or re.fullmatch(r'(?:send me (?:the )?\w+|unsubscribe whenever[^.!]*[.!]?|[^.!?]{1,70} starts here)', plain)):
             continue
         # Breadcrumb entries are short labels prefixed by a navigation separator.
         if re.fullmatch(r'[/›»]\s+[^.!?\n]{1,100}', plain) and len(plain.split()) <= 8:

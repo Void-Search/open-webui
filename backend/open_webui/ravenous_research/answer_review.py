@@ -151,10 +151,14 @@ async def reviewed_response(request, body, user, metadata, complete):
     """Return (response, quoted); an unchecked draft never reaches the browser."""
     selected = metadata.get('ravenous_selected_passages', [])
     assessment = metadata.get('ravenous_evidence_assessment') or {}
+    research_context = metadata.get('ravenous_research_context') or {}
     sufficient = (assessment.get('sufficient') is True and selected
                   and not assessment.get('missing') and not assessment.get('conflicts'))
+    # Missing coverage is not a reason to bypass synthesis of supported details.
+    # Partial follow-ups require the same draft proof as a complete researched reply.
+    partial = (selected and research_context.get('previous_query') and not assessment.get('conflicts'))
     text, usage, accepted = '', None, False
-    if sufficient:
+    if sufficient or partial:
         deadline = time.monotonic() + 60
         try:
             draft_body = {**body, 'stream': False, 'temperature': 0,
@@ -170,7 +174,6 @@ async def reviewed_response(request, body, user, metadata, complete):
                     and not choice['message'].get('tool_calls')
                     and not unsupported_numbers(text, selected)
                     and not borrowed_unsupported_terms(text, assessment.get('previous_answer') or '', selected)):
-                research_context = metadata.get('ravenous_research_context') or {}
                 if research_context.get('previous_query'):
                     accepted = await asyncio.wait_for(
                         check_draft(request, body, user, text, selected,

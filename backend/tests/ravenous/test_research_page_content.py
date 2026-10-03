@@ -115,3 +115,24 @@ def test_linked_headings_and_source_identity_are_not_rejected_as_cards():
         'https://example.test/advice\nThis article explains how to take a small first step.',
     ):
         assert evidence.anchored_excerpts(evidence.passages([source(text)]))
+
+
+def test_directory_controls_do_not_replace_the_requested_details():
+    text = ('Create Event\n\nOpen App\n\n## Willow Hall\n'
+            'Address: 17 Orchard Road, Oxford.\n\nCheck ticket price on event\n\n'
+            '_Save this event: A talk__Share this event: A talk_\n\nPrevious\n\nExplore more events')
+    assert clean_web_text(text) == '## Willow Hall\nAddress: 17 Orchard Road, Oxford.'
+    literal = '## Labels\n```text\nCreate Event\nSave this event: A talk\n```\nUse these exact labels.'
+    assert clean_web_text(literal) == literal
+
+
+def test_named_details_exclude_unrelated_directory_entries_but_keep_source_identity():
+    def item(text, title='Events in Oxford'):
+        return {'text': text, 'source_id': 'directory', 'source': {'name': title},
+                'metadata': {'research_kind': 'web'}}
+
+    assert evidence.quotation_records(item('## Cedar Centre\nAddress: 2 School Road.'), ['Willow Hall']) == []
+    assert evidence.quotation_records(item('## Willow Hall\nAddress: 17 Orchard Road.'), ['Willow Hall'])
+    assert evidence.quotation_records(item('## Contact\n17 Orchard Road.', 'Willow Hall – Contact'), ['Willow Hall'])
+    assert evidence.quotation_records(item('## Willow Hall\n17 Orchard Road, Oxford.'), ['Willow Hall, Oxford'])
+    assert evidence.quotation_records(item('## Willowy Hallway\n17 Orchard Road.'), ['Willow Hall']) == []

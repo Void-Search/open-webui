@@ -21,8 +21,9 @@ def process_native_chat(monkeypatch):
 
     async def exercise(*, review, complete, stream, selected, continuing=False, assessment=None, limited=False,
                        draft_supported=True, prior_research=True):
-        supported_input = bool(assessment and assessment.get('sufficient') is True and selected
-                               and not assessment.get('missing') and not assessment.get('conflicts'))
+        supported_input = bool(selected and not (assessment or {}).get('conflicts')
+                               and (prior_research or (assessment and assessment.get('sufficient') is True
+                                                      and not assessment.get('missing'))))
         quoting = review and complete and not (
             supported_input and draft_supported
         )
@@ -153,9 +154,19 @@ def test_continuing_completion_refreshes_context_and_processes_empty_selection(
     {'sufficient': False}, {'sufficient': True, 'missing': ['Missing relationship']},
     {'sufficient': True, 'conflicts': ['Sources disagree']},
 ])
-def test_partial_or_conflicting_server_assessment_is_visible_in_excerpt_reply(process_native_chat, assessment):
+def test_supported_partial_followups_use_reviewed_synthesis_and_conflicts_remain_conservative(
+    process_native_chat, assessment
+):
     asyncio.run(process_native_chat(review=True, complete=True, stream=True, selected=[selected_passage()],
                                    continuing=True, assessment=assessment, limited=True))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_rejected_partial_synthesis_keeps_only_verified_excerpts(process_native_chat, stream):
+    asyncio.run(process_native_chat(review=True, complete=True, stream=stream,
+                                   selected=[selected_passage()],
+                                   assessment={'sufficient': False, 'missing': ['Other items remain unverified.']},
+                                   limited=True, draft_supported=False))
 
 
 @pytest.mark.parametrize('stream', [False, True])
