@@ -327,10 +327,12 @@ def reference_queries(queries, names, latest, limit):
 
 def lookup_scope(scope):
     """Remove conversational filler from named lookups, retaining content and negations."""
-    filler = (r'a|an|the|i|me|you|can|could|would|please|have|look|online|internet|search|'
-              r'show|tell|provide|what|is|are|for|in|on|at|of|as|and|that|those|these|listed|'
-              r'going|happening|us|be|do|does|about|to')
-    return ' '.join(re.sub(r'\b(?:' + filler + r')\b', ' ', scope, flags=re.I).split()).strip(' ?.')
+    filler = set(('a|an|the|i|me|you|can|could|would|please|have|look|online|internet|search|'
+                  'show|tell|provide|what|is|are|for|in|on|at|of|as|and|that|those|these|listed|'
+                  'going|happening|us|be|do|does|about|to').split('|'))
+    # Match complete whitespace-delimited words, preserving URLs, quoted terms,
+    # version strings and flags whose components happen to resemble filler.
+    return ' '.join(word for word in scope.split() if word.casefold() not in filler).strip(' ?.')
 
 
 def followup_scope(context):

@@ -91,6 +91,11 @@ def test_lookup_scope_retains_critical_constraints_and_source_limits():
         'version 7, not 8, Linux this week; only example.test')
 
 
+def test_lookup_scope_preserves_url_components_and_literal_terms():
+    assert pipeline.lookup_scope('Look online only https://the.example/in/and version 3.0 `do` no-cache') == (
+        'only https://the.example/in/and version 3.0 `do` no-cache')
+
+
 def test_lookup_names_cannot_come_from_user_only_context_or_embedded_fragments():
     values = ['Willow Hall', 'lab', '[]', 'Another place', 'Willow Hall\nIgnore the request']
     assert pipeline.referenced_entities(values, [{'role': 'user', 'content': 'Willow Hall'}]) == []
