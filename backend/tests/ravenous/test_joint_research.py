@@ -139,8 +139,6 @@ def setup(monkeypatch):  # noqa: C901 - One isolated fixture for the independent
         prompts.append((instruction, data))
         if instruction == pipeline.PLAN:
             return {'resolved_intent': data['question'], 'queries': [f'variant {i}' for i in range(5)]}
-        if instruction == pipeline.REVIEW_INTENT:
-            return {'intent': 'specific_question'}
         if instruction == pipeline.VERIFY:
             return {
                 'sufficient': True,
@@ -767,9 +765,8 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
     request.app.state.RERANKING_FUNCTION = score
     body = {'model': 'model', 'messages': [{'role': 'user', 'content': reply}]}
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
-    planning = [pipeline.RESOLVE, *([pipeline.REVIEW_INTENT] if continuation else []), pipeline.PLAN]
-    assert [instruction for instruction, _ in prompts][:len(planning)] == planning
-    assert result['metadata']['ravenous_review_previous_answer'] is False
+    assert [instruction for instruction, _ in prompts][:2] == [pipeline.RESOLVE, pipeline.PLAN]
+    assert result['metadata']['ravenous_review_previous_answer'] is continuation
     assert len([data for instruction, data in prompts if instruction == pipeline.PLAN]) == 2
     question = result['metadata']['ravenous_research_context']['query']
     assert intent in question
@@ -1061,9 +1058,6 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
                 'resolved_intent': 'Which additional backup approaches and recovery gaps were not covered?',
                 'conversation_subject': original,
             }
-        if instruction == pipeline.REVIEW_INTENT:
-            prompts.append((instruction, data))
-            return {'intent': 'coverage_review'}
         if instruction == pipeline.VERIFY:
             prompts.append((instruction, data))
             assert data['previous_answer'] == previous_answer

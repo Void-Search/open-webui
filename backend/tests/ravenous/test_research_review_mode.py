@@ -1,4 +1,4 @@
-"""Coverage review is server-resolved, branch-scoped and backed by intact excerpts."""
+"""Research continuations retain intact excerpts without an intent-confidence gate."""
 
 import asyncio
 from types import SimpleNamespace
@@ -14,55 +14,70 @@ def research_state():
 
 
 @pytest.mark.parametrize(
-    'continuation,intent,expected',
-    [(True, 'coverage_review', True), (True, 'specific_question', False),
-     (True, 'unknown', True), (True, True, True), (True, None, True),
-     (False, 'coverage_review', False)],
+    'reply,continuation',
+    [('Which backup options were missed?', True), ('How much does that backup option cost?', True),
+     ('Explain how black holes form.', False)],
 )
-def test_only_confirmed_followups_use_separate_intent_classification(monkeypatch, continuation, intent, expected):
+def test_research_continuations_use_excerpts_without_an_extra_classifier(monkeypatch, reply, continuation):
     research = research_state()
     calls = []
     context = {
-        'latest_user_message': 'Which options were missed?',
-        'original_query': 'Which options were missed?',
+        'latest_user_message': reply, 'original_query': reply,
         'previous_original_query': 'Which backup methods are available?',
         'history': [{'role': 'user', 'content': 'Which backup methods are available?'}],
-        'review_previous_answer': True,
     }
 
-    async def model(_request, _model, _user, instruction, data, **kwargs):
+    async def model(_request, _model, _user, instruction, data, **_kwargs):
         calls.append(instruction)
-        if instruction == pipeline.RESOLVE:
-            return {'continuation': continuation, 'resolved_intent': 'Which backup options were missed?'}
-        assert instruction == pipeline.REVIEW_INTENT
-        assert data == {
-            'latest_user_message': context['latest_user_message'],
-            'previous_user_request': context['previous_original_query'],
-        }
-        assert 0 < kwargs['timeout'] <= 6
-        assert kwargs['response_format'] == pipeline.REVIEW_INTENT_FORMAT
-        return {'intent': intent}
+        assert instruction == pipeline.RESOLVE
+        assert data['latest_user_message'] == reply
+        return {'continuation': continuation, 'resolved_intent': reply}
 
     monkeypatch.setattr(pipeline, 'model_json', model)
     asyncio.run(research.resolve_followup(context))
-    assert context['review_previous_answer'] is expected
-    assert (pipeline.REVIEW_INTENT in calls) is continuation
-    failures = research.report['failures']
-    assert bool(failures) is (continuation and intent not in ('coverage_review', 'specific_question'))
+    assert calls == [pipeline.RESOLVE]
+    assert context['review_previous_answer'] is continuation
+    assert research.metadata['ravenous_review_previous_answer'] is continuation
+    assert research.report['failures'] == []
 
 
-def test_classifier_timeout_preserves_excerpts_for_known_followup(monkeypatch):
+@pytest.mark.parametrize('invalid', [False, True])
+def test_unresolved_followup_keeps_literal_question_and_safe_excerpts(monkeypatch, invalid):
     research = research_state()
+    research.question = 'What was missed?'
 
     async def unavailable(*_args, **_kwargs):
+        if invalid:
+            return {'continuation': 'true', 'resolved_intent': 'An untrusted interpretation of the question'}
         raise TimeoutError
 
     monkeypatch.setattr(pipeline, 'model_json', unavailable)
-    context = {'latest_user_message': 'What was missed?', 'previous_original_query': 'Compare backup options'}
-    asyncio.run(research.classify_review(context))
+    context = {'latest_user_message': research.question, 'previous_query': 'Compare backup options'}
+    asyncio.run(research.resolve_followup(context))
     assert context['review_previous_answer'] is True
+    assert 'continuation' not in context
+    assert research.question == 'What was missed?'
     assert research.metadata['ravenous_review_previous_answer'] is True
-    assert research.report['failures'] == [{'stage': 'planning', 'code': 'review_intent_unavailable'}]
+    assert research.report['failures'] == [{'stage': 'planning', 'code': 'intent_resolution_unavailable'}]
+
+
+def test_outer_deadline_cannot_restore_unguarded_followup_generation(monkeypatch):
+    research = research_state()
+
+    async def pending(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(pipeline, 'model_json', pending)
+    context = {'latest_user_message': 'What was missed?', 'previous_query': 'Compare backup options'}
+
+    async def exercise():
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(research.resolve_followup(context), 0.01)
+
+    asyncio.run(exercise())
+    assert context['review_previous_answer'] is True
+    assert 'continuation' not in context
+    assert research.metadata['ravenous_review_previous_answer'] is True
 
 
 def test_joint_context_rejects_caller_supplied_review_and_retry_metadata():
