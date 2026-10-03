@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { citedSources, outcomeLabel, researchState, sourceLink } from './research';
+	import { citedSources, outcomeLabel, researchState, sourceLink, sourceOutcome } from './research';
 	import ResearchRecovery from './ResearchRecovery.svelte';
 	export let entries: any[] = [];
 	export let content = '';
@@ -79,11 +79,7 @@
 								rel="noopener noreferrer">{source.title}</a
 							>{:else}<span>{source.title}</span>{/if}
 						<span class="ml-1 text-xs text-gray-500"
-							>{source.kind} · {source.selected
-								? cited.has(source.citation)
-									? 'Selected · Cited'
-									: 'Selected for generation'
-								: 'Retrieved · Excluded'}</span
+							>{source.kind} · {sourceOutcome(source, cited)}</span
 						>
 						{#if !source.selected}<p class="text-xs text-gray-500">
 								{source.reasons.map(outcomeLabel).join(', ')}

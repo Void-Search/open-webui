@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { citedSources, outcomeLabel, researchState, sourceLink } from './research';
+import { citedSources, outcomeLabel, researchState, sourceLink, sourceOutcome } from './research';
 
 describe('research activity', () => {
+	it('distinguishes unfinished verification from evidence exclusion', () => {
+		const cited = new Set([1]);
+		expect(
+			sourceOutcome(
+				{ selected: false, reasons: ['low_relevance', 'verification_incomplete'] },
+				cited
+			)
+		).toBe('Retrieved · Unverified');
+		expect(sourceOutcome({ selected: false, reasons: ['unsupported'] }, cited)).toBe(
+			'Retrieved · Excluded'
+		);
+		expect(sourceOutcome({ selected: true, citation: 1 }, cited)).toBe('Selected · Cited');
+		expect(outcomeLabel('low_relevance')).toBe('Low passage relevance');
+	});
+
 	it('updates each live query and page without repeating rows', () => {
 		const entries = [
 			{

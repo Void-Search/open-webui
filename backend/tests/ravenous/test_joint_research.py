@@ -58,6 +58,7 @@ def test_global_reranking_preserves_source_diversity_and_drops_duplicates():
     assert any(item['reason'] == 'duplicate' for item in candidates)
     prompt = evidence.context_message(ranked, 'Resolved original intent')['content']
     assert '<source id="1"' in prompt and '<source id="2"' in prompt
+    assert 'Allowed citation markers: [1], [2].' in prompt
     assert 'Second complementary fact' in prompt
 
 
@@ -131,7 +132,7 @@ def setup(monkeypatch):  # noqa: C901 - One isolated fixture for the independent
     async def remember(metadata, _user, result):
         metadata['ravenous_research'] = result
 
-    async def fit(_request, body, _user, ordered, question):
+    async def fit(_request, body, _user, ordered, question, **_kwargs):
         return ordered, [*body['messages'], evidence.context_message(ordered, question)]
 
     async def model(_request, _model, _user, instruction, data, **_kwargs):
@@ -219,7 +220,7 @@ def test_general_pipeline_supplies_web_and_local_evidence_to_generation(setup, q
     )
     assert events[-1]['data']['recovery'] is None
     assert {item['kind'] for item in events[-1]['data']['report']['sources']} == {'web', 'local', 'saved'}
-    assert len(next(data for instruction, data in prompts if instruction == pipeline.VERIFY)['passages']) == 4
+    assert [len(data['passages']) for instruction, data in prompts if instruction == pipeline.VERIFY] == [2, 4]
 
 
 def test_candidate_limit_is_fair_before_joint_reranking():
@@ -239,7 +240,7 @@ def test_verification_references_restore_stable_provenance(setup):
     request, emit, _, prompts = setup
     body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the requirements'}]}
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
-    assessment = next(data for instruction, data in prompts if instruction == pipeline.VERIFY)
+    assessment = [data for instruction, data in prompts if instruction == pipeline.VERIFY][-1]
     assert [item['id'] for item in assessment['passages']] == ['e1', 'e2', 'e3', 'e4']
     assert len(assessment['sources']) == 4
     assert {source['url'] for source in assessment['sources'] if source['kind'] == 'web'} == {
@@ -255,7 +256,7 @@ def test_verification_references_restore_stable_provenance(setup):
     assert all(identifier.startswith('p') and len(identifier) == 21 for identifier in stable_ids)
 
 
-@pytest.mark.parametrize('failure', ['timeout', 'unknown_reference'])
+@pytest.mark.parametrize('failure', ['timeout', 'truncated', 'unknown_reference'])
 def test_failed_verification_never_labels_unchecked_sources_as_supported(setup, monkeypatch, failure):
     request, emit, events, _ = setup
     original = pipeline.model_json
@@ -266,6 +267,8 @@ def test_failed_verification_never_labels_unchecked_sources_as_supported(setup, 
             assert 20 < kwargs['timeout'] <= 60
             if failure == 'timeout':
                 raise TimeoutError
+            if failure == 'truncated':
+                raise pipeline.ModelOutputTruncated
             result['supported_ids'] = ['untrusted-invented-reference']
         return result
 
@@ -275,7 +278,9 @@ def test_failed_verification_never_labels_unchecked_sources_as_supported(setup, 
     assert result['metadata']['ravenous_retrieval_sources'] == []
     assert 'general knowledge' in result['messages'][-1]['content']
     report = events[-1]['data']['report']
-    expected = 'assessment_timeout' if failure == 'timeout' else 'assessment_unavailable'
+    expected = {'timeout': 'assessment_timeout', 'truncated': 'assessment_truncated'}.get(
+        failure, 'assessment_unavailable'
+    )
     assert report['failures'] == [{'stage': 'verification', 'code': expected}]
     assert all(
         not source['selected'] and source['reasons'] == ['verification_incomplete'] for source in report['sources']
@@ -326,7 +331,7 @@ def test_reranker_failure_still_verifies_bounded_candidates(setup):
     request.app.state.RERANKING_FUNCTION = None
     body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the requirements'}]}
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
-    assert result['messages'][-1]['content'].count('<source id=') == 4
+    assert result['messages'][-1]['content'].count('<source id=') == 2
     assert any(instruction == pipeline.VERIFY for instruction, _ in prompts)
     assert 'joint reranking unavailable' in events[-1]['data']['report']['summary']
 
@@ -355,12 +360,12 @@ def test_cancellation_stops_all_acquisition_branches_without_completing(setup, m
                 SimpleNamespace(id='alice'),
             )
         )
-        while len(started) < 3:
+        while not started:
             await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert len(stopped) == 3
+        assert len(stopped) == 1
         assert not any(event['data']['action'] == 'research_complete' for event in events)
 
     asyncio.run(exercise())
@@ -408,18 +413,21 @@ def test_final_context_accounts_for_tools_and_updates_citations(monkeypatch, fit
     )
 
 
-def test_web_outage_does_not_prevent_local_answer(setup, monkeypatch):
+def test_explicit_local_search_does_not_depend_on_web(setup, monkeypatch):
     request, emit, events, _ = setup
 
     async def unavailable(*_args):
         raise HTTPException(503, 'unavailable')
 
     monkeypatch.setattr(pipeline.transport, 'batch', unavailable)
-    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the interface requirements'}]}
+    body = {
+        'model': 'model',
+        'messages': [{'role': 'user', 'content': 'Only search my attached files: explain the interface requirements'}],
+    }
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
     assert 'private manual' in result['messages'][-1]['content']
     assert events[-1]['data']['report']['local']['native']['status'] == 'completed'
-    assert 'service unavailable' in events[-1]['data']['report']['summary']
+    assert not events[-1]['data']['report']['queries']
 
 
 def test_short_query_plan_is_completed_before_parallel_dispatch(setup, monkeypatch):
@@ -477,14 +485,15 @@ def test_total_failure_generates_labeled_general_answer_with_details_and_clickab
         )
     )
     state = result['metadata']['ravenous_research']
-    assert 'Local knowledge: failed' in state['response_notice']
+    assert 'Local knowledge: skipped' in state['report']['summary']
+    assert state['response_notice'] is None
     assert state['answer_basis'] == 'general_knowledge'
     assert result['metadata']['ravenous_retrieval_sources'] == []
     assert 'general knowledge' in result['messages'][-1]['content']
     assert len(events[-1]['data']['recovery']['choices']) == 3
 
 
-def test_engine_failure_details_reach_response_once_while_local_evidence_survives(setup, monkeypatch):
+def test_engine_failure_details_stay_in_report_and_local_search_is_skipped(setup, monkeypatch):
     request, emit, _, _ = setup
     detail = 'brave: rate limited; duckduckgo: connection failed'
 
@@ -516,9 +525,10 @@ def test_engine_failure_details_reach_response_once_while_local_evidence_survive
     )
     state = result['metadata']['ravenous_research']
     assert state['report']['summary'].count(detail) == 1
-    assert state['response_notice'].count(detail) == 1
-    assert 'Local knowledge: completed' in state['response_notice']
-    assert result['metadata']['ravenous_retrieval_sources']
+    assert state['response_notice'] is None
+    assert 'Local knowledge: skipped' in state['report']['summary']
+    assert detail not in result['messages'][-1]['content']
+    assert not result['metadata']['ravenous_retrieval_sources']
 
 
 def test_low_scores_receive_semantic_review_and_irrelevant_sources_stay_excluded(setup, monkeypatch):
@@ -529,14 +539,14 @@ def test_low_scores_receive_semantic_review_and_irrelevant_sources_stay_excluded
     async def assess(*args, **kwargs):
         result = await original(*args, **kwargs)
         if args[3] == pipeline.VERIFY:
-            result['supported_ids'] = [p['id'] for p in args[4]['passages'] if 'private manual' in p['text']]
+            result['supported_ids'] = [p['id'] for p in args[4]['passages'] if 'public specification' in p['text']]
         return result
 
     monkeypatch.setattr(pipeline, 'model_json', assess)
     body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the local installation'}]}
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
     assert len(result['metadata']['ravenous_retrieval_sources']) == 1
-    assert 'private manual' in result['messages'][-1]['content']
+    assert 'public specification' in result['messages'][-1]['content']
     rejected = [s for s in events[-1]['data']['report']['sources'] if not s['selected']]
     assert rejected and all(s['reasons'] == ['unsupported'] for s in rejected)
 
@@ -733,3 +743,211 @@ def test_continued_question_keeps_subject_when_the_model_only_repeats_the_latest
     assert question.count('Previous subject:') == 1
     context.update(previous_original_query='a' * 4000, latest_user_message='b' * 4000)
     assert len(pipeline.continued_question('c' * 4000, context)) <= 3500
+
+
+def test_joint_research_uses_configured_external_reranker(setup, monkeypatch):
+    request, emit, events, _ = setup
+
+    async def external_engine(_key):
+        return 'external'
+
+    monkeypatch.setattr(sys.modules['open_webui.models.config'].Config, 'get', external_engine)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the requirements'}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    assert all(
+        meta['score'] == 0.9
+        for item in result['metadata']['ravenous_retrieval_sources']
+        for meta in item['metadata']
+    )
+    assert 'joint reranking unavailable' not in events[-1]['data']['report']['summary']
+
+
+def test_rejected_saved_sources_cannot_produce_a_clarification(setup, monkeypatch):
+    request, emit, events, _ = setup
+    original = pipeline.model_json
+
+    async def assess(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[3] == pipeline.VERIFY:
+            result.update(
+                sufficient=False,
+                supported_ids=[],
+                clarification_question='The sources define content. Can you provide event information?',
+                choices=['No event information', 'The sources only define content'],
+            )
+        return result
+
+    monkeypatch.setattr(pipeline, 'model_json', assess)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Bremen weekend events'}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    recovery = events[-1]['data']['recovery']
+    assert recovery['kind'] == 'retry'
+    assert 'define content' not in json.dumps(recovery)
+    assert result['metadata']['ravenous_retrieval_sources'] == []
+
+
+@pytest.mark.parametrize('sufficient', [False, True])
+def test_local_search_starts_only_after_sufficient_web_evidence(setup, monkeypatch, sufficient):
+    request, emit, events, _ = setup
+    original = pipeline.model_json
+    verified, calls = [], []
+
+    async def model(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[3] == pipeline.VERIFY:
+            verified.append(True)
+            result['sufficient'] = sufficient
+        return result
+
+    async def native(_request, _user, question, queries, *_args, **_kwargs):
+        assert verified and sufficient and queries == [question]
+        calls.append('native')
+        return []
+
+    async def saved(_user, question, queries):
+        assert verified and sufficient and queries == [question]
+        calls.append('saved')
+        return []
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    monkeypatch.setattr(pipeline.local, 'native_sources', native)
+    monkeypatch.setattr(pipeline.local, 'research_sources', saved)
+    asyncio.run(pipeline.run(request, {'model': 'model', 'messages': [{'role': 'user', 'content': 'Question'}]},
+                             {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    assert set(calls) == ({'native', 'saved'} if sufficient else set())
+
+
+def test_only_verified_sentences_from_a_mixed_event_passage_reach_the_answer(setup, monkeypatch):
+    request, emit, _, _ = setup
+    original = pipeline.model_json
+    wanted = '[Community concert](https://example.org/concert)\nOctober 4, 2026, Bremen, Germany.\nDoors at 19:00.'
+
+    async def batch(*_args):
+        return {'calls': 1, 'pages': [], 'evidence': [{
+            'source': {'url': 'https://example.org/events', 'title': 'Events'},
+            'text': wanted + '\nPast market on September 29, 2026. Future parade on August 28, 2027.',
+            'fetched_at': '2026-09-29T00:00:00Z', 'content_sha256': 'a' * 64,
+        }]}
+
+    async def assess(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        if args[3] == pipeline.VERIFY:
+            chosen = [p for p in args[4]['passages'] if p['text'] in wanted.splitlines()]
+            assert len({p['block'] for p in chosen}) == 1
+            result['supported_ids'] = [p['id'] for p in chosen]
+        return result
+
+    monkeypatch.setattr(pipeline.transport, 'batch', batch)
+    monkeypatch.setattr(pipeline, 'model_json', assess)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Bremen this weekend'}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    answer_context = result['messages'][-1]['content']
+    assert wanted in answer_context
+    assert 'Past market' not in answer_context and 'Future parade' not in answer_context
+    assert 'Web:' not in answer_context and 'Local knowledge:' not in answer_context
+    assert result['metadata']['ravenous_retrieval_sources'][0]['document'] == [wanted]
+
+
+def test_weekend_reference_is_stable_during_the_weekend():
+    import datetime as dt
+    expected = ['2026-10-02', '2026-10-03', '2026-10-04']
+    for day in (dt.date(2026, 9, 29), dt.date(2026, 10, 2), dt.date(2026, 10, 4)):
+        assert evidence.weekend_dates(day) == expected
+        calendar = evidence.calendar_context(day)
+        assert calendar['weekend_dates'] == expected
+        assert [calendar['weekdays'][date] for date in expected] == ['Friday', 'Saturday', 'Sunday']
+
+
+@pytest.mark.parametrize('truncated', [False, True])
+def test_large_assessment_bounds_output_and_rejects_truncated_json(monkeypatch, truncated):
+    async def generate(_request, body, _user):
+        schema = body['response_format']['json_schema']['schema']
+        selection = schema['properties']['supported_ids']
+        references = selection['items']['enum']
+        assert len(references) == 289
+        assert selection['maxItems'] == 32
+        assert schema['additionalProperties'] is False
+        payload = {
+            'sufficient': True, 'supported_ids': references[:32],
+            'missing': [], 'conflicts': [], 'choices': [], 'clarification_question': None,
+        }
+        return {'choices': [{
+            'finish_reason': 'length' if truncated else 'stop',
+            'message': {'content': '{"supported_ids": ["e1",' if truncated else json.dumps(payload)},
+        }]}
+
+    module = ModuleType('open_webui.utils.chat')
+    module.generate_chat_completion = generate
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    research = pipeline.NativeResearch(None, {'model': 'model'}, {'__event_emitter__': None}, None)
+    research.question = 'Creative ways to reuse art'
+    fitted = [{
+        'id': 'original', 'source_id': 'page', 'source': {'name': 'Art ideas'}, 'metadata': {},
+        'text': '\n'.join(f'Useful source sentence number {index}.' for index in range(289)),
+    }]
+    if truncated:
+        with pytest.raises(pipeline.ModelOutputTruncated):
+            asyncio.run(research.assess(fitted))
+    else:
+        result = asyncio.run(research.assess(fitted))
+        assert result['sufficient'] and result['supported_ids'] == ['original']
+        assert len(result['supported_text']['original'].splitlines()) == 32
+        assert 'number 32.' not in result['supported_text']['original']
+
+
+def test_verification_fits_its_actual_payload_before_generating(monkeypatch):
+    checked, generated = [], []
+
+    async def generate(_request, body, _user):
+        # Stand in for the provider's complete-payload token count. Sentence JSON
+        # has more overhead than the same text in the eventual answer prompt.
+        serialized = json.dumps(body)
+        if len(serialized) > 6500:
+            assert context.probing.get(), 'An oversized request reached generation'
+            raise ContextBudgetError('local model protected content exceeds context')
+        if context.probing.get():
+            assert body['messages'][0]['content'] == pipeline.VERIFY
+            assert body['max_tokens'] == 1600
+            assert body['response_format']['type'] == 'json_schema'
+            checked.append(serialized)
+            return {'research_context_checked': True, 'payload': body}
+        assert serialized in checked, 'The generated request differs from the counted request'
+        generated.append(serialized)
+        sentences = json.loads(body['messages'][1]['content'])['passages']
+        result = {
+            'sufficient': True, 'supported_ids': [item['id'] for item in sentences[:32]],
+            'missing': [], 'conflicts': [], 'choices': [], 'clarification_question': None,
+        }
+        return {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(result)}}]}
+
+    module = ModuleType('open_webui.utils.chat')
+    module.generate_chat_completion = generate
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    request = SimpleNamespace(state=SimpleNamespace(), app=SimpleNamespace(state=SimpleNamespace(
+        MODELS={'model': {}}, RERANKING_FUNCTION=lambda _query, docs: [0.9] * len(docs),
+    )))
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'Explain the requirements'}]}
+    research = pipeline.NativeResearch(request, body, {'__event_emitter__': None}, None)
+    research.question = research.user_context = body['messages'][0]['content']
+    research.sources = [source(
+        f'page-{index}',
+        ' '.join(f'Page {index} explains installation requirement {number} and its compatibility limits.'
+                 for number in range(7)),
+        'web',
+    ) for index in range(8)]
+    asyncio.run(research.evaluate())
+    assert research.assessment['sufficient']
+    assert 0 < len(research.selected) < len(research.sources)
+    assert any(item['reason'] == 'context_limit' for item in research.candidates)
+    assert len(generated) == 1
+    assert not context.probing.get()
+
+
+def test_passage_windows_preserve_lines_and_cover_long_input():
+    text = '\n'.join(f'[Item {i}](https://example.org/{i})\nItem {i} has its own date and venue.' for i in range(60))
+    windows = list(evidence.passage_windows(text))
+    assert all(len(window) <= 1000 for _, window in windows)
+    for line in text.splitlines():
+        assert any(line in window for _, window in windows)
+    assert any('[Item 15](https://example.org/15)\nItem 15 has its own date and venue.' in window
+               for _, window in windows)

@@ -40,7 +40,7 @@ def test_all_accessible_collections_are_paginated_and_attachments_are_preserved(
         return {}
 
     async def retrieve(**kwargs):
-        assert kwargs['candidate_only'] and kwargs['k_reranker'] == 75
+        assert kwargs['candidate_only'] and kwargs['k_reranker'] == 15
         assert kwargs['reranking_function'] is None and kwargs['r'] == 0
         searched.extend(kwargs['items'])
         return [

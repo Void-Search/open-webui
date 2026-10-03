@@ -45,10 +45,18 @@ export function sourceLink(value: unknown): string | null {
 	return null;
 }
 
+export function sourceOutcome(source: any, cited: Set<number>): string {
+	if (source.selected)
+		return cited.has(source.citation) ? 'Selected · Cited' : 'Selected for generation';
+	return source.reasons?.includes('verification_incomplete')
+		? 'Retrieved · Unverified'
+		: 'Retrieved · Excluded';
+}
+
 export function outcomeLabel(value: string): string {
 	const labels: Record<string, string> = {
 		duplicate: 'Duplicate content',
-		low_relevance: 'Low relevance',
+		low_relevance: 'Low passage relevance',
 		context_limit: 'Context limit',
 		candidate_limit: 'Candidate pool limit',
 		access_revoked: 'Access no longer available',

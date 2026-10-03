@@ -43,6 +43,9 @@ async def seed_registered_defaults():
     await Config.rename_prefix('rag.web', 'web')
     await Config.repair_config_rows()
     await Config.seed_defaults(DEFAULT_CONFIG)
+    from open_webui.ravenous_model_api import migrate_model_api_config
+
+    await migrate_model_api_config(Config, DEFAULT_CONFIG, DATA_DIR)
 
 
 async def async_reset_config():

@@ -76,6 +76,13 @@
 							kind: 'web',
 							selected: false,
 							reasons: ['duplicate']
+						},
+						{
+							id: 'unverified',
+							title: 'Pending evidence',
+							kind: 'web',
+							selected: false,
+							reasons: ['verification_incomplete', 'low_relevance']
 						}
 					]
 				},

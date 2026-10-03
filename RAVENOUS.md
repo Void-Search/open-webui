@@ -28,9 +28,10 @@ Compose >=2.17) before building anything.
 The Dockerfile builds the frontend with `npm ci` and installs the backend's
 version-pinned requirements. Keep `package-lock.json` and upstream `uv.lock`
 committed when updating dependencies; the Dockerfile follows upstream's
-requirements installation, including CPU-specific Torch wheels. Slim builds are
-the default: Ravenous prepares model caches in the same image on the application
-host. The application image contains no LanguageTool JVM or managed subprocess.
+slim requirements installation. Slim is the only image: embedding and reranking
+use the RAG service, with no local Torch/Sentence Transformers runtime. The
+`cl100k_base` tokenizer cache is bundled outside the data mount for offline
+splitting. The application image contains no LanguageTool JVM or managed subprocess.
 The frontend build allows an 8 GiB Node heap; reserve additional memory for the
 other build processes. Override `--build-arg NODE_OPTIONS=...` when needed.
 

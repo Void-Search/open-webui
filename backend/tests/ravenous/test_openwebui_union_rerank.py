@@ -1,7 +1,10 @@
 """Tests for final multi-query union reranking."""
 
+import ast
 import asyncio
-from typing import Any
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Optional
 
 import pytest
 from open_webui.retrieval.ravenous_union_rerank import (
@@ -282,3 +285,73 @@ def test_weak_retrieval_alone_still_clarifies_after_filtering():
     assessment = summarize_retrieval_sources(sources, 0.4)
     assert not filter_retrieval_sources(sources, 0.4)
     assert assessment is not None and assessment["clarify"] is True
+
+
+def test_external_reranker_batches_large_sentence_union_without_partial_results(monkeypatch):
+    monkeypatch.setenv('RAG_FINAL_UNION_RERANKING', 'true')
+    tree = ast.parse((Path(__file__).parents[2] / 'open_webui/retrieval/utils.py').read_text())
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'get_reranking_function'
+    )
+    namespace = {'USE_SLIM': True}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<reranking>', 'exec'), namespace)
+    documents = [' '.join(f'Document-{index} sentence-{sentence}.' for sentence in range(10)) for index in range(15)]
+    merged = {'documents': [documents], 'metadatas': [[{'id': index} for index in range(15)]]}
+    calls = []
+
+    def predict(batch, user=None):
+        calls.append(batch)
+        assert len(batch) <= 8
+        return [int(text.split()[0].split('-')[1]) / 15 for _, text in batch]
+
+    scorer = namespace['get_reranking_function']('external', 'model', SimpleNamespace(predict=predict), 8)
+    result = asyncio.run(
+        rerank_merged_result(merged, query='Question', reranking_function=scorer, limit=15, relevance_threshold=0)
+    )
+    assert sum(map(len, calls)) == 285
+    assert [item['id'] for item in result['metadatas'][0]] == list(reversed(range(15)))
+
+    def fail_after_first_batch(batch, user=None):
+        return [0.5] * len(batch) if batch[0][1] == documents[0].split('. ')[0] + '.' else None
+
+    broken_scorer = namespace['get_reranking_function'](
+        'external', 'model', SimpleNamespace(predict=fail_after_first_batch), 8
+    )
+    failed = asyncio.run(
+        rerank_merged_result(
+            merged, query='Question', reranking_function=broken_scorer, limit=15, relevance_threshold=0
+        )
+    )
+    assert failed['documents'] == merged['documents']
+    assert failed[RETRIEVAL_ASSESSMENT_KEY]['status'] == 'failed'
+
+
+def test_native_hybrid_candidates_do_not_embed_documents_or_rerank():
+    tree = ast.parse((Path(__file__).parents[2] / 'open_webui/retrieval/utils.py').read_text())
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == 'query_doc_with_native_hybrid_search'
+    )
+    calls = []
+    result = {'documents': [['Indexed document']], 'metadatas': [[{'source': 'file'}]], 'distances': [[0.8]]}
+
+    async def embed(text, prefix):
+        calls.append(text)
+        assert text == 'Question'
+        return [0.1] * 384
+
+    async def hybrid(**kwargs):
+        assert kwargs['vectors'] == [[0.1] * 384]
+        return SimpleNamespace(model_dump=lambda: result)
+
+    namespace = {
+        'Optional': Optional,
+        '_supports_native_hybrid_search': lambda: True,
+        'ASYNC_VECTOR_DB_CLIENT': SimpleNamespace(hybrid_search=hybrid),
+        'RAG_EMBEDDING_QUERY_PREFIX': '',
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<hybrid>', 'exec'), namespace)
+    actual = asyncio.run(
+        namespace[function.name]('collection', 'Question', embed, 75, None, 75, 0, 0.5, candidate_only=True)
+    )
+    assert actual == result and calls == ['Question']

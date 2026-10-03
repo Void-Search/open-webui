@@ -76,9 +76,9 @@ async def native_sources(
         embedding_function=lambda values, prefix: request.app.state.EMBEDDING_FUNCTION(
             values, prefix=prefix, user=user
         ),
-        k=75,
+        k=15,
         reranking_function=None,
-        k_reranker=75,
+        k_reranker=15,
         r=0,
         hybrid_bm25_weight=config.get('rag.hybrid_bm25_weight', 0.5),
         hybrid_search=config.get('rag.enable_hybrid_search', True),

@@ -13,7 +13,7 @@ from .evidence import context_message
 probing = ContextVar('research_context_probe', default=False)
 
 
-async def fit(request, body, user, ordered, question):
+async def fit(request, body, user, ordered, question, *, build_payload=None):
     from open_webui.utils.chat import generate_chat_completion
     from open_webui.utils.misc import merge_system_messages, strip_empty_content_blocks
 
@@ -22,7 +22,7 @@ async def fit(request, body, user, ordered, question):
         raise ContextBudgetError('Context counting is unavailable for this model')
 
     async def check(count):
-        probe = {
+        probe = build_payload(ordered[:count]) if build_payload else {
             **copy.deepcopy({key: value for key, value in body.items() if key != 'metadata'}),
             'stream': False,
             'metadata': dict(body.get('metadata', {})),
@@ -162,7 +162,7 @@ async def finalize(request, body, user, emit):
             'report': report,
             'recovery': recovery,
             'clarification_question': recovery['question'],
-            'response_notice': report['summary'],
+            'response_notice': None,
             'attempts': [{'query': value} for value in state.get('attempted_queries', [])],
         }
         await remember_result(metadata, user, result)

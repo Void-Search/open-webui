@@ -49,7 +49,7 @@ async def saved(user, question, queries):
                 'queries': [{'text': query} for query in queries],
                 'resolved_intent': question,
                 'include_saved_research': True,
-                'limit': 75,
+                'limit': 15,
                 'candidate_only': True,
             },
         )

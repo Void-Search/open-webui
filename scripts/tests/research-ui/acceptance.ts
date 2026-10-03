@@ -68,6 +68,8 @@ export async function exercise() {
 		'Local knowledge: Completed',
 		'Selected · Cited',
 		'Retrieved · Excluded',
+		'Retrieved · Unverified',
+		'Low passage relevance',
 		'Duplicate content'
 	]) {
 		assert(document.body.innerText.includes(text), `Missing detail: ${text}`);

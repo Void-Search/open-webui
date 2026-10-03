@@ -266,7 +266,7 @@ async def remember_result(metadata, user, result, *, chats=None):
 
 def append_question(content, metadata):
     state = metadata.get(STATE_KEY) or {}
-    question = state.get('response_notice') if state.get('pipeline') == 'joint' else state.get('question')
+    question = None if state.get('pipeline') == 'joint' else state.get('question')
     if not question or not isinstance(content, str) or question in content:
         return content
     return content.rstrip() + '\n\n' + question
@@ -275,7 +275,7 @@ def append_question(content, metadata):
 def finish_output(output, metadata):
     """Append once after tool execution, including when the model omits the question."""
     state = metadata.get(STATE_KEY) or {}
-    question = state.get('response_notice') if state.get('pipeline') == 'joint' else state.get('question')
+    question = None if state.get('pipeline') == 'joint' else state.get('question')
     if not question:
         return output
     messages = [item for item in output if item.get('type') == 'message']

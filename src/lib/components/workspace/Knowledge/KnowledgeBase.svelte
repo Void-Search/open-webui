@@ -516,19 +516,11 @@
 							(file) => !hasHiddenFolder(file.webkitRelativePath) && !file.name.startsWith('.')
 						);
 
-						if (entry.kind === 'file') {
-							let file: File;
-							try {
-								file = await entry.getFile();
-							} catch (error) {
-								throw new Error(`"${entryPath}": ${error}`);
-							}
-							collected.push({ path: dirPath, filename: entry.name, file });
-						} else if (entry.kind === 'directory') {
-							await traverse(entry, entryPath);
-						}
-					}
-				}
+						const collected = files.map((file) => {
+							const parts = file.webkitRelativePath.split('/');
+							const filename = parts.pop() || file.name;
+							return { path: parts.join('/'), filename, file };
+						});
 
 						input.remove();
 						resolve(collected);

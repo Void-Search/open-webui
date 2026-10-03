@@ -442,6 +442,7 @@ async def query_doc_with_native_hybrid_search(
     k_reranker: int,
     r: float,
     hybrid_bm25_weight: float,
+    candidate_only: bool = False,
 ) -> Optional[dict]:
     try:
         if not _supports_native_hybrid_search():
@@ -460,6 +461,9 @@ async def query_doc_with_native_hybrid_search(
         )
         if result is None:
             return None
+
+        if candidate_only:
+            return result.model_dump()
 
         documents = _search_result_to_documents(result)
         if not documents:
@@ -508,6 +512,7 @@ async def query_doc_with_hybrid_search(
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
     native_hybrid_search: bool = True,
+    candidate_only: bool = False,
 ) -> dict:
     if native_hybrid_search and not enable_enriched_texts:
         native_result = await query_doc_with_native_hybrid_search(
@@ -519,6 +524,7 @@ async def query_doc_with_hybrid_search(
             k_reranker=k_reranker,
             r=r,
             hybrid_bm25_weight=hybrid_bm25_weight,
+            candidate_only=candidate_only,
         )
         if native_result is not None:
             return native_result
@@ -583,6 +589,14 @@ async def query_doc_with_hybrid_search(
             weights=[hybrid_bm25_weight, 1.0 - hybrid_bm25_weight],
             id_key=CHUNK_HASH_KEY,
         )
+
+    if candidate_only:
+        candidates = await ensemble_retriever.ainvoke(query)
+        return {
+            'distances': [[0.0] * len(candidates)],
+            'documents': [[doc.page_content for doc in candidates]],
+            'metadatas': [[doc.metadata for doc in candidates]],
+        }
 
     compressor = RerankCompressor(
         embedding_function=embedding_function,
@@ -817,7 +831,7 @@ async def query_collection(
     merged = merge_and_sort_query_results(results, k=k, candidate_only=candidate_only)
     if hybrid_failed:
         return failed_retrieval_result(merged, 'hybrid_retrieval_failed')
-    if error and not results:
+    if failed_collection_names and not results:
         return failed_retrieval_result(merged, 'vector_retrieval_failed')
     return merged
 
@@ -841,6 +855,8 @@ async def query_collection_with_hybrid_search(
 
     async def finalize_results(query_results):
         merged = merge_and_sort_query_results(query_results, k=k, candidate_only=candidate_only)
+        if candidate_only:
+            return merged
         return await rerank_merged_result(
             merged,
             query=rerank_query or queries[0],
@@ -861,6 +877,7 @@ async def query_collection_with_hybrid_search(
                 k_reranker=k_reranker,
                 r=r,
                 hybrid_bm25_weight=hybrid_bm25_weight,
+                candidate_only=candidate_only,
             )
             return result
 
@@ -903,6 +920,7 @@ async def query_collection_with_hybrid_search(
                 k_reranker=k_reranker,
                 r=r,
                 hybrid_bm25_weight=hybrid_bm25_weight,
+                candidate_only=candidate_only,
                 enable_enriched_texts=enable_enriched_texts,
                 native_hybrid_search=False,
             )
@@ -1319,9 +1337,19 @@ def get_reranking_function(reranking_engine, reranking_model, reranking_function
     if reranking_function is None:
         return None
     if reranking_engine == 'external':
-        return lambda query, documents, user=None: reranking_function.predict(
-            [(query, doc.page_content) for doc in documents], user=user
-        )
+
+        def predict_external(query, documents, user=None):
+            batch_size = min(256, max(1, int(reranking_batch_size)))
+            scores = []
+            for start in range(0, len(documents), batch_size):
+                batch = documents[start : start + batch_size]
+                result = reranking_function.predict([(query, doc.page_content) for doc in batch], user=user)
+                if result is None or len(result) != len(batch):
+                    return None
+                scores.extend(result)
+            return scores
+
+        return predict_external
     else:
 
         def predict(query, documents, user=None):

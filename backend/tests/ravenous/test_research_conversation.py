@@ -236,7 +236,7 @@ def test_popup_choice_resumes_only_its_parent_without_model_rewrite():
     assert result['source_domains'] == ['example.org']
 
 
-def test_joint_failure_notice_appears_once_and_question_stays_in_popup():
+def test_joint_details_and_question_stay_out_of_answer():
     notice = 'Web: 5 queries, 2 pages failed. Local knowledge: completed, 0 sources retrieved.'
     meta = {
         'ravenous_research': {
@@ -249,8 +249,19 @@ def test_joint_failure_notice_appears_once_and_question_stays_in_popup():
     result = responses.finish_json(response, meta)
     result = responses.finish_json(result, meta)
     text = result['choices'][0]['message']['content']
-    assert text.count(notice) == 1
+    assert notice not in text
     assert 'How would you like to continue?' not in text
+
+    output = [{'type': 'message', 'content': [{'type': 'output_text', 'text': text}]}]
+    assert conversation.finish_output(output, meta) == output
+
+    async def stream():
+        original = responses.complete_response(text, 'fixture', stream=True)
+        return ''.join([frame async for frame in responses.question_stream(original.body_iterator, meta)])
+
+    frames = asyncio.run(stream())
+    assert notice not in frames and 'How would you like to continue?' not in frames
+    assert '[DONE]' in frames
 
 
 def test_joint_followup_uses_literal_history_not_the_previous_retry_offer():
