@@ -14,6 +14,15 @@ def passage(kind='web'):
             'metadata': {'research_kind': kind}}
 
 
+def test_time_estimates_cannot_borrow_a_number_from_another_source():
+    selected = [{'source_id': 'breaks', 'text': 'Take a break for a few minutes.'},
+                {'source_id': 'tasks', 'text': 'Try ten tasks, or 10 minutes of data entry.'}]
+    assert answer_review.unsupported_numbers('Take a 5–10 minute break. [1]', selected)
+    assert answer_review.unsupported_numbers('Take a 10 minute break. [1]', selected)
+    assert not answer_review.unsupported_numbers('1. Try 10 minutes of data entry. [2]', selected)
+    assert answer_review.unsupported_numbers('The value is 5.5. [1]', [{'source_id': 'value', 'text': 'The value is 5.0.'}])
+
+
 def test_prior_answer_cannot_supply_a_missing_claim_term_or_version():
     selected = [passage()]
     assert answer_review.borrowed_unsupported_terms(

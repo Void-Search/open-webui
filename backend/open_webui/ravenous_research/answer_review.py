@@ -70,6 +70,27 @@ def borrowed_unsupported_terms(text, previous, selected):
     return bool((terms(text) & terms(previous)) - terms('\n'.join(item['text'] for item in selected)))
 
 
+def unsupported_numbers(text, selected):
+    """Numerical details need support in the sources cited beside that paragraph."""
+    def numbers(value):
+        value = re.sub(r'^\s*(?:>\s*)*\d+[.)]\s+|\[\d+\]', '', value, flags=re.M)
+        return {number if '.' in number else str(int(number))
+                for number in re.findall(r'\d+(?:\.\d+)?', value)}
+
+    identifiers = {}
+    for item in selected:
+        identifiers.setdefault(item['source_id'], len(identifiers) + 1)
+    for paragraph in re.split(r'\n\s*\n', text):
+        values = numbers(paragraph)
+        if not values:
+            continue
+        citations = {int(number) for number in re.findall(r'\[(\d+)\]', paragraph)}
+        source = '\n'.join(item['text'] for item in selected if identifiers[item['source_id']] in citations)
+        if not values <= numbers(source):
+            return True
+    return False
+
+
 def review_input(text, selected, question):
     identifiers = {}
     for item in selected:
@@ -136,7 +157,9 @@ async def reviewed_response(request, body, user, metadata, complete):
     if sufficient:
         deadline = time.monotonic() + 60
         try:
-            draft = await asyncio.wait_for(complete(request, {**body, 'stream': False}, user), 40)
+            draft_body = {**body, 'stream': False, 'temperature': 0,
+                          'chat_template_kwargs': {**body.get('chat_template_kwargs', {}), 'enable_thinking': False}}
+            draft = await asyncio.wait_for(complete(request, draft_body, user), 40)
             if isinstance(draft, JSONResponse):
                 if draft.status_code >= 400:
                     return draft, False
@@ -145,6 +168,7 @@ async def reviewed_response(request, body, user, metadata, complete):
             text = choice['message'].get('content')
             if (choice.get('finish_reason') == 'stop' and isinstance(text, str) and text.strip()
                     and not choice['message'].get('tool_calls')
+                    and not unsupported_numbers(text, selected)
                     and not borrowed_unsupported_terms(text, assessment.get('previous_answer') or '', selected)):
                 research_context = metadata.get('ravenous_research_context') or {}
                 if research_context.get('previous_query'):
