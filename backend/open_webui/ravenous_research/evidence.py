@@ -177,28 +177,31 @@ def source_groups(selected):
     return list(groups.values())
 
 
-def review_low_scores(candidates, limit=12, *, excluded_sources=()):
-    """A score cutoff is not a factual-support verdict; let the verifier decide."""
+def review_low_scores(candidates, limit=12):
+    """Review a bounded, source-diverse set; low scores do not establish support."""
     if limit <= 0:
         return []
-    sources = set(excluded_sources)
-    selected = []
+    groups = defaultdict(list)
     for item in sorted(
         (item for item in candidates if item.get('reason') == 'low_relevance'),
         key=lambda item: -(item.get('score') or 0),
     ):
-        if item['source_id'] in sources:
-            continue
-        sources.add(item['source_id'])
-        item['reason'] = None
-        selected.append(item)
-        if len(selected) == limit:
-            break
+        groups[item['source_id']].append(item)
+    selected = []
+    while groups:
+        for key in list(groups):
+            item = groups[key].pop(0)
+            item['reason'] = None
+            selected.append(item)
+            if not groups[key]:
+                del groups[key]
+            if len(selected) == limit:
+                return selected
     return selected
 
 
 def supplement_sources(ordered, candidates, limit=12):
-    """Let verification review complementary sources before repeated passages."""
+    """Review lower-ranked details on every source before more strong passages."""
     represented, first, remaining = set(), [], []
     for item in ordered:
         if item['source_id'] in represented:
@@ -206,7 +209,7 @@ def supplement_sources(ordered, candidates, limit=12):
         else:
             represented.add(item['source_id'])
             first.append(item)
-    alternatives = review_low_scores(candidates, limit, excluded_sources=represented)
+    alternatives = review_low_scores(candidates, limit)
     return [*first, *alternatives, *remaining]
 
 

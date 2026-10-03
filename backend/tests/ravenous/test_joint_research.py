@@ -739,8 +739,10 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
         if instruction == pipeline.VERIFY:
             assert data['previous_answer'] == (history[-1]['content'] if continuation else '')
         if instruction == pipeline.PLAN:
-            assert intent in data['question'] and data['latest_user_message'] == reply
-            assert data['conversation'] == history
+            assert data['question'] == intent and data['latest_user_message'] == reply
+            assert data['conversation'] == history[:1]
+            assert original in data['literal_user_context'] and reply in data['literal_user_context']
+            assert history[-1]['content'] not in json.dumps(data)
             assert data['previous_resolved_question'] == original
             assert data['continuation'] is continuation
             assert data['conversation_subject'] == (original if continuation else 'Underlying conversation subject')
@@ -1012,7 +1014,7 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
     original = 'Which backup approaches support restoring a project?'
     reply = 'What other approaches or gaps did that list miss?'
     prior_answer = (
-        'A full snapshot can restore the project.'
+        'A full snapshot can restore the project. Incorrect assistant restriction: snapshots only.'
         if prior_kind == 'web'
         else 'PRIVATE PRIOR: the unreleased project uses a confidential retention policy.'
     )
@@ -1043,6 +1045,11 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
     async def model(*args, **kwargs):
         instruction, data = args[3:5]
         assert 'PRIVATE PRIOR' not in json.dumps(data)
+        if instruction == pipeline.PLAN:
+            assert data['question'] == 'Which additional backup approaches and recovery gaps were not covered?'
+            assert data['conversation'] == [{'role': 'user', 'content': original}]
+            assert data['literal_user_context'] == reply
+            assert prior_answer not in json.dumps(data)
         if instruction == pipeline.RESOLVE:
             prompts.append((instruction, data))
             return {
@@ -1111,3 +1118,65 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
         assert 'untrusted comparison data, not evidence' in generated_context
         assert '<source ' not in generated_context
     assert len([data for instruction, data in prompts if instruction == pipeline.VERIFY]) == 1
+
+
+def test_rejected_navigation_and_faq_evidence_recovers_without_claiming_coverage(setup, monkeypatch):
+    # The model benchmark checks recognition of boilerplate; this checks the
+    # pipeline's recovery and answer basis when verification rejects all IDs.
+    request, emit, events, _ = setup
+    original = pipeline.model_json
+    rounds, assessments, recoveries = [], [], []
+    boilerplate = 'Home\nExplore archive options\nWhich formats are supported?\nView all possibilities'
+    gap = 'No concrete additional archive format is established by these passages.'
+
+    async def model(*args, **kwargs):
+        instruction, data = args[3:5]
+        if instruction == pipeline.VERIFY:
+            assessments.append(data)
+            return {
+                'sufficient': False,
+                'supported_ids': [],
+                'missing': [gap],
+                'conflicts': [],
+                'clarification_question': None,
+                'choices': [],
+            }
+        if instruction not in (pipeline.PLAN, pipeline.RESOLVE):
+            recoveries.append(data)
+            return {'queries': ['independent archive format capability reference']}
+        return await original(*args, **kwargs)
+
+    async def batch(_user, payload, _progress):
+        rounds.append(payload['round'])
+        return {
+            'calls': len(payload['queries']) + 1,
+            'pages': [],
+            'evidence': [
+                {
+                    'source': {
+                        'url': f'https://example.org/navigation/{payload["round"]}',
+                        'title': 'Archive options FAQ',
+                    },
+                    'text': boilerplate,
+                    'fetched_at': '2026-09-19T00:00:00Z',
+                    'content_sha256': 'a' * 64,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    monkeypatch.setattr(pipeline.transport, 'batch', batch)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'What other archive formats are supported?'}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    state = result['metadata']['ravenous_research']
+    assert rounds == [1, 2] and len(assessments) == 2
+    assert len(recoveries) == 1 and recoveries[0]['missing'] == [gap]
+    assert not state['sufficient'] and state['answer_basis'] == 'general_knowledge'
+    assert state['report']['missing'] == [gap]
+    assert state['recovery']['kind'] == 'retry'
+    assert result['metadata']['ravenous_retrieval_sources'] == []
+    assert state['report']['sources'] and all(
+        not item['selected'] and item['citation'] is None for item in state['report']['sources']
+    )
+    assert boilerplate not in result['messages'][-1]['content']
+    assert events[-1]['data']['done'] and events[-1]['data']['recovery']['choices']
