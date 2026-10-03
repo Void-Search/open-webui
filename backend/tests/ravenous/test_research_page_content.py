@@ -1,5 +1,6 @@
 """Web furniture is excluded before selection without losing advice or conditions."""
 
+import pytest
 from open_webui.ravenous_research import evidence
 from open_webui.ravenous_research.source_text import clean_web_text
 
@@ -72,6 +73,32 @@ def test_code_examples_and_local_documents_are_not_treated_as_web_ui():
     assert clean_web_text(text) == text
     local = 'Advertisement\n\nHome\n / Articles\nThe literal labels must be copied.'
     assert any('Advertisement' in item['text'] for item in evidence.passages([source(local, 'local')]))
+
+
+@pytest.mark.parametrize('fence', ['```', '~~~~'])
+def test_literal_offer_strings_and_blank_lines_in_code_are_preserved(fence):
+    text = ('## Message templates\n' + fence + 'text\n'
+            'template = "Buy my course and join us."\n\n\n'
+            'message = "Subscribe to our newsletter"\n' + fence + '\n'
+            'These literal strings must be copied unchanged.\n\n'
+            'Buy our course and join us.')
+    assert clean_web_text(text) == text.rsplit('\n\n', 1)[0]
+
+
+def test_article_masthead_labels_are_removed_without_cutting_conditions():
+    text = ('Mechanical and Biomedical Engineering\n\nNews\n\n'
+            'Most of us procrastinate.\n\n## Start small\n'
+            'Pick one manageable task.\n\nOnly with a realistic goal')
+    cleaned = clean_web_text(text)
+    assert cleaned.startswith('Most of us procrastinate.')
+    assert 'News' not in cleaned and 'Mechanical' not in cleaned
+    assert cleaned.endswith('Only with a realistic goal')
+    assert clean_web_text('Only with permission\n\nBefore beginning\n\nProceed carefully.') == (
+        'Only with permission\n\nBefore beginning\n\nProceed carefully.')
+    assert clean_web_text('2026\n\nNews\n\nThis report applies to the stated year.') == (
+        '2026\n\nNews\n\nThis report applies to the stated year.')
+    assert clean_web_text('Free plan\n\nPreview mode\n\nThese constraints apply.') == (
+        'Free plan\n\nPreview mode\n\nThese constraints apply.')
 
 
 def test_unrelated_link_card_cannot_be_quoted_as_article_body():

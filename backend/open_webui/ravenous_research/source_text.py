@@ -13,6 +13,7 @@ FOOTER_LABELS = {
     'you may also like', 'more articles', 'about the author', 'free printable',
     'newsletter', 'subscribe to our newsletter',
 }
+ARTICLE_CATEGORY_LABELS = {'articles', 'news', 'blog'}
 
 
 def label(text):
@@ -28,6 +29,12 @@ def promotional_paragraph(text):
     return bool(offering and (conditional_offer or (action and re.search(r'\b(?:i|my|me|our|us)\b', plain))))
 
 
+def display_label(block):
+    """A short unstructured label, excluding prose, conditions and Markdown."""
+    return (bool(block.strip()) and len(block) <= 120
+            and not re.search(r'[.!?:;]|\b\d{4}\b|^\s*(?:#{1,6}\s|`{3,}|~{3,}|\||[-*+]\s)|\b(?:only|require\w*|unless|except|must|without|not|if)\b', block, re.I | re.M))
+
+
 def trim_footer_labels(lines):
     """Remove adjoining display labels before an explicit footer/offer marker."""
     while lines:
@@ -38,9 +45,44 @@ def trim_footer_labels(lines):
             start -= 1
         block = '\n'.join(lines[start:])
         # Code, headings, lists, punctuation and qualification words remain.
-        if (len(block) > 120 or re.search(r'[.!?:;]|^\s*(?:#{1,6}\s|`{3,}|~{3,}|\||[-*+]\s|\d+[.)]\s)|\b(?:only|require\w*|unless|except|must|without|not|if)\b', block, re.I | re.M)):
+        if not display_label(block):
             break
         del lines[start:]
+
+
+def clean_prose(text, *, leading=False):
+    paragraphs = re.split(r'\n\s*\n', text)
+    if leading:
+        labels = 0
+        for paragraph in paragraphs:
+            if not display_label(paragraph) or re.search(r'\d', paragraph):
+                break
+            labels += 1
+        # A recognized category within a leading label run identifies a masthead.
+        # Ambiguous labels, dates and qualifying text remain for verification.
+        if (labels >= 2 and labels < len(paragraphs)
+                and any(label(part) in ARTICLE_CATEGORY_LABELS for part in paragraphs[:labels])):
+            paragraphs = paragraphs[labels:]
+    return '\n\n'.join(paragraph for paragraph in paragraphs if not promotional_paragraph(paragraph))
+
+
+def clean_prose_outside_code(text):
+    """Filter prose paragraphs while preserving fenced examples and blank lines."""
+    parts, pending, fence = [], [], None
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r'^\s*(`{3,}|~{3,})(.*)$', line.rstrip('\r\n'))
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                parts.append(''.join(pending))
+                pending, fence = [], None
+        elif marker:
+            parts.append(clean_prose(''.join(pending), leading=not parts))
+            pending, fence = [line], marker[1]
+        else:
+            pending.append(line)
+    parts.append(''.join(pending) if fence else clean_prose(''.join(pending), leading=not parts))
+    return ''.join(parts).strip()
 
 
 def clean_web_text(text):
@@ -84,8 +126,7 @@ def clean_web_text(text):
         ):
             continue
         kept.append(line)
-    paragraphs = re.split(r'\n\s*\n', '\n'.join(kept))
-    return '\n\n'.join(paragraph for paragraph in paragraphs if not promotional_paragraph(paragraph)).strip()
+    return clean_prose_outside_code('\n'.join(kept))
 
 
 def article_body_record(text, source_url=''):
