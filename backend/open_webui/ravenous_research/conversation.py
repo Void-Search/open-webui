@@ -178,8 +178,10 @@ async def prepare_context(request, form_data, user, *, chats=None, resolver=None
 
     metadata = form_data.setdefault('metadata', {})
     existing = metadata.get('ravenous_research_context')
-    if existing is not None:
+    if existing is not None and not joint:
         return existing
+    # The joint pipeline resolves current intent server-side. A caller-supplied
+    # cached context must not enable review mode or manufacture a saved retry.
     messages = form_data['messages']
     reply = next((m.get('content', '') for m in reversed(messages) if m.get('role') == 'user'), '')
     if not isinstance(reply, str):
@@ -189,6 +191,7 @@ async def prepare_context(request, form_data, user, *, chats=None, resolver=None
         'original_query': reply[:3500],
         'source_domains': requested_domains(reply),
         'cancelled': cancelled(reply),
+        'review_previous_answer': False,
     }
     previous = await pending_state(metadata, user, chats, require_question=False)
     if previous:
@@ -205,6 +208,8 @@ async def prepare_context(request, form_data, user, *, chats=None, resolver=None
         if choice and choice.get('mode') in ('web', 'local', 'both'):
             continuation, intent = True, pending.get('resolved_query', pending['original_query'])
             context['retrieval_mode'] = choice['mode']
+            context['continuation'] = True
+            context['review_previous_answer'] = pending.get('review_previous_answer') is True
         elif joint:
             # Ordinary follow-ups are resolved once from conversation + latest turn,
             # not as answers to a technical retry prompt from a previous result.
@@ -240,6 +245,7 @@ async def remember_result(metadata, user, result, *, chats=None):
     if result.get('pipeline') == 'joint':
         state.update(
             pipeline='joint',
+            review_previous_answer=metadata.get('ravenous_review_previous_answer') is True,
             report=result['report'],
             recovery=result.get('recovery'),
             response_notice=result.get('response_notice'),

@@ -139,6 +139,8 @@ def setup(monkeypatch):  # noqa: C901 - One isolated fixture for the independent
         prompts.append((instruction, data))
         if instruction == pipeline.PLAN:
             return {'resolved_intent': data['question'], 'queries': [f'variant {i}' for i in range(5)]}
+        if instruction == pipeline.REVIEW_INTENT:
+            return {'intent': 'specific_question'}
         if instruction == pipeline.VERIFY:
             return {
                 'sufficient': True,
@@ -765,7 +767,9 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
     request.app.state.RERANKING_FUNCTION = score
     body = {'model': 'model', 'messages': [{'role': 'user', 'content': reply}]}
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
-    assert [instruction for instruction, _ in prompts][:2] == [pipeline.RESOLVE, pipeline.PLAN]
+    planning = [pipeline.RESOLVE, *([pipeline.REVIEW_INTENT] if continuation else []), pipeline.PLAN]
+    assert [instruction for instruction, _ in prompts][:len(planning)] == planning
+    assert result['metadata']['ravenous_review_previous_answer'] is False
     assert len([data for instruction, data in prompts if instruction == pipeline.PLAN]) == 2
     question = result['metadata']['ravenous_research_context']['query']
     assert intent in question
@@ -1057,6 +1061,9 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
                 'resolved_intent': 'Which additional backup approaches and recovery gaps were not covered?',
                 'conversation_subject': original,
             }
+        if instruction == pipeline.REVIEW_INTENT:
+            prompts.append((instruction, data))
+            return {'intent': 'coverage_review'}
         if instruction == pipeline.VERIFY:
             prompts.append((instruction, data))
             assert data['previous_answer'] == previous_answer
@@ -1104,8 +1111,9 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
     result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
     generated_context = result['messages'][-1]['content']
     assert snippet not in generated_context and 'PRIVATE PRIOR' not in generated_context
-    assert json.dumps(previous_answer) in generated_context
+    assert result['metadata']['ravenous_review_previous_answer'] is True
     if has_addition:
+        assert json.dumps(previous_answer) in generated_context
         selected = result['metadata']['ravenous_selected_passages']
         assert len(selected) == 1 and selected[0]['source_id'] == 'https://backup.example/incremental'
         assert selected[0]['score'] == 0.2
@@ -1114,8 +1122,9 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
         assert not events[-1]['data']['recovery']
     else:
         assert result['metadata']['ravenous_retrieval_sources'] == []
-        assert events[-1]['data']['report']['answer_basis'] == 'general_knowledge'
-        assert 'untrusted comparison data, not evidence' in generated_context
+        assert events[-1]['data']['report']['answer_basis'] == 'source_limited'
+        assert all(message['role'] != 'system' for message in result['messages'])
+        assert generated_context == reply
         assert '<source ' not in generated_context
     assert len([data for instruction, data in prompts if instruction == pipeline.VERIFY]) == 1
 

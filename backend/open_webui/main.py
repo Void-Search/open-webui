@@ -1661,7 +1661,18 @@ async def chat_completion(
             if await drain_approved_tool_calls(request, form_data, user, model, metadata):
                 return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 
-            response = await chat_completion_handler(request, form_data, user)
+            if metadata.get('ravenous_retrieval_complete') and metadata.get('ravenous_review_previous_answer'):
+                from open_webui.ravenous_research.responses import excerpt_response
+
+                # Coverage checks use final authorized source wording. Keep the
+                # normal response processor for citations, persistence and done.
+                response = excerpt_response(
+                    metadata.get('ravenous_selected_passages', []),
+                    form_data['model'],
+                    stream=form_data.get('stream', False),
+                )
+            else:
+                response = await chat_completion_handler(request, form_data, user)
 
             # When the upstream provider returns an error (e.g. HTTP 400
             # content-filter, quota exceeded), generate_chat_completion

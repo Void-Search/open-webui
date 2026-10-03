@@ -1,9 +1,66 @@
 """Completed research replies and clarification delivery for JSON and SSE clients."""
 
 import codecs
+import html
 import json
+import time
+import uuid
+
+from starlette.responses import StreamingResponse
 
 from .conversation import append_question, finish_output
+
+
+def excerpt_text(selected):
+    """Quote final authorized passages without rewriting facts or source boundaries."""
+    identifiers, excerpts = {}, []
+    # Selection is already bounded by verification and the final context budget.
+    # Keep complete passages so a limit here cannot detach a qualifying line.
+    punctuation = str.maketrans({char: f'&#{ord(char)};' for char in '\\`*_{}[]()#+-.!|~'})
+    for item in selected:
+        number = identifiers.setdefault(item['source_id'], len(identifiers) + 1)
+        text = item.get('text')
+        if not isinstance(text, str) or not text.strip():
+            continue
+        # Entities preserve visible wording while disabling Markdown links,
+        # images, headings and source-authored citation markers.
+        escaped = html.escape(text, quote=False).translate(punctuation)
+        quote = '\n'.join('> ' + line if line else '>' for line in escaped.splitlines())
+        excerpts.append(quote + f'\n\n[{number}]')
+    if not excerpts:
+        return 'I could not verify enough source detail to answer this request.'
+    return (
+        'Here are relevant source excerpts. Details not stated in them remain unverified; this is not '
+        'a complete list or a guarantee that every item is new.\n\n'
+        + '\n\n'.join(excerpts)
+    )
+
+
+def excerpt_response(selected, model, stream=False):
+    """Use the ordinary completion processor for source events, persistence and SSE completion."""
+    text = excerpt_text(selected)
+    envelope = {
+        'id': 'chatcmpl-ravenous-' + uuid.uuid4().hex,
+        'created': int(time.time()),
+        'model': model,
+    }
+    if not stream:
+        return {
+            **envelope,
+            'object': 'chat.completion',
+            'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
+        }
+
+    async def events():
+        for delta, finish in [({'role': 'assistant', 'content': text}, None), ({}, 'stop')]:
+            yield 'data: ' + json.dumps({
+                **envelope,
+                'object': 'chat.completion.chunk',
+                'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}],
+            }) + '\n\n'
+        yield 'data: [DONE]\n\n'
+
+    return StreamingResponse(events(), media_type='text/event-stream')
 
 
 def finish_json(data, metadata):

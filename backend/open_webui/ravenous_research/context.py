@@ -136,7 +136,9 @@ async def finalize(request, body, user, emit):
         notice = 'Some supporting evidence was omitted after accounting for the full model context.'
         report['summary'] += ' ' + notice
         if not fitted:
-            source_limited = metadata.get('ravenous_source_limited', False)
+            source_limited = bool(
+                metadata.get('ravenous_source_limited') or metadata.get('ravenous_review_previous_answer')
+            )
             report['answer_basis'] = 'source_limited' if source_limited else 'general_knowledge'
             if not source_limited:
                 report['summary'] = (

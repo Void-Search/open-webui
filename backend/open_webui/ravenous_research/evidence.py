@@ -255,7 +255,7 @@ def context_message(selected, question, assessment=None):
         url = html.escape(str(item['metadata'].get('source_url') or item['metadata'].get('link') or ''), quote=True)
         blocks.append(
             f'<source id="{number}" citation="[{number}]" name="{title}" url="{url}" passage="{item["id"]}">'
-            + html.escape(item['text'])
+            + html.escape(item['text'], quote=False)
             + '</source>'
         )
     gaps = (assessment or {}).get('missing', [])
@@ -315,7 +315,7 @@ def context_message(selected, question, assessment=None):
             + '\n'.join(blocks)
             + '\n</research_evidence>\n'
             'Give a concise answer to the actual question. Keep only details supported for each named item. '
-            'Use the answer form: supported finding [source citation]. Each factual sentence or list item '
+            'Each factual sentence or list item '
             'must include its supporting citation marker; use the citation attribute of its source. '
             'Include essential limitations answering the user request, but omit internal '
             'retrieval statistics and unrelated coverage summaries.'
