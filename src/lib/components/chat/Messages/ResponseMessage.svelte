@@ -853,6 +853,8 @@
 									content={message.content}
 									output={message.output}
 									sources={message.sources}
+									legacyResearchExcerpts={message?.meta?.ravenous_research
+										?.review_previous_answer === true}
 									floatingButtons={message?.done &&
 										!readOnly &&
 										($settings?.showFloatingActionButtons ?? true)}

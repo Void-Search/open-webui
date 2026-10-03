@@ -81,16 +81,25 @@ def substantive_record(text):
     return False
 
 
+def quotation_records(item):
+    """Return complete bounded sections eligible for both verification and display."""
+    records = item.get('original_records')
+    if records is None:
+        records = [record for _, _, record in source_records(item.get('original_excerpt', item['text']))]
+    return [record for record in records if len(record) <= 2000 and substantive_record(record)]
+
+
 def anchored_excerpts(selected, limit=12, character_limit=12000):
     """Quote complete source records containing selected anchors, never stitched sentences."""
     excerpts, seen = [], set()
     for item in selected:
         anchors = [line.strip() for line in item['text'].splitlines() if line.strip()]
-        records = item.get('original_records')
-        if records is None:
-            records = [record for _, _, record in source_records(item.get('original_excerpt', item['text']))]
-        for record in records:
-            if len(record) > 2000 or not substantive_record(record) or not any(anchor in record for anchor in anchors):
+        verified = item.get('verified_sections')
+        for record in quotation_records(item):
+            if verified is not None:
+                if record not in verified:
+                    continue
+            elif not any(anchor in record for anchor in anchors):
                 continue
             key = item['source_id'], record
             if key in seen or len(excerpts) >= limit or len(record) > character_limit:

@@ -26,6 +26,7 @@
 	export let compactPreview = false;
 	export let renderMarkdown = true;
 	export let editCodeBlock = true;
+	export let legacyResearchExcerpts = false;
 	export let topPadding = false;
 	export let allowEmbeds = false;
 	export let sourceIds: string[] = [];
@@ -86,6 +87,7 @@
 					{done}
 					{allowEmbeds}
 					{editCodeBlock}
+					{legacyResearchExcerpts}
 					{topPadding}
 					{sourceIds}
 					{onSourceClick}

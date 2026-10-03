@@ -47,6 +47,7 @@
 
 	export let paragraphTag = 'p';
 	export let editCodeBlock = true;
+	export let legacyResearchExcerpts = false;
 	export let topPadding = false;
 	export let allowEmbeds = false;
 
@@ -112,6 +113,7 @@
 		{compactPreview}
 		{paragraphTag}
 		{editCodeBlock}
+		{legacyResearchExcerpts}
 		{sourceIds}
 		{topPadding}
 		{allowEmbeds}

@@ -1674,6 +1674,11 @@ async def chat_completion(
                     metadata.get('ravenous_selected_passages', []),
                     form_data['model'],
                     stream=form_data.get('stream', False),
+                    limited=(
+                        metadata.get('ravenous_evidence_assessment', {}).get('sufficient') is False
+                        or bool(metadata.get('ravenous_evidence_assessment', {}).get('missing'))
+                        or bool(metadata.get('ravenous_evidence_assessment', {}).get('conflicts'))
+                    ),
                 )
             else:
                 response = await chat_completion_handler(request, form_data, user)

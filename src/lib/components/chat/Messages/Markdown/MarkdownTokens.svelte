@@ -45,6 +45,8 @@
 	export let paragraphTag = 'p';
 
 	export let editCodeBlock = true;
+	export let legacyResearchExcerpts = false;
+	export let insideBlockquote = false;
 	export let topPadding = false;
 	export let allowEmbeds = false;
 
@@ -190,7 +192,15 @@
 			/>
 		</svelte:element>
 	{:else if token.type === 'code'}
-		{#if token.raw.includes('```')}
+		{#if token.lang === 'ravenous-excerpt' || (legacyResearchExcerpts && insideBlockquote && token.lang === 'text')}
+			<!-- Keep source text opaque to Markdown, citations, HTML and math. -->
+			<div
+				class="ravenous-source-excerpt whitespace-pre-wrap break-words font-sans not-italic"
+				dir="auto"
+			>
+				{token.text}
+			</div>
+		{:else if token.raw.includes('```')}
 			<CodeBlock
 				id={`${id}-${tokenIdx}`}
 				collapsed={$settings?.collapseCodeBlocks ?? false}
@@ -317,6 +327,8 @@
 					{preview}
 					{compactPreview}
 					{editCodeBlock}
+					{legacyResearchExcerpts}
+					insideBlockquote={true}
 					{onTaskClick}
 					{sourceIds}
 					{onSourceClick}

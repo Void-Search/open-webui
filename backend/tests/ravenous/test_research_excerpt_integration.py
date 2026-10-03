@@ -19,7 +19,7 @@ def process_native_chat():
     function = next(node for node in ast.walk(tree)
                     if isinstance(node, ast.AsyncFunctionDef) and node.name == 'process_chat')
 
-    async def exercise(*, review, complete, stream, selected, continuing=False):
+    async def exercise(*, review, complete, stream, selected, continuing=False, assessment=None, limited=False):
         sources = evidence.source_groups(selected)
         events = [{'sources': sources}]
         server_metadata = {
@@ -27,6 +27,7 @@ def process_native_chat():
             'ravenous_review_previous_answer': review,
             'ravenous_selected_passages': selected,
             'sources': sources,
+            'ravenous_evidence_assessment': assessment or {},
         }
         calls = []
         provider_result = {'provider_response': True}
@@ -68,7 +69,7 @@ def process_native_chat():
                 else:
                     assert response['choices'][0]['finish_reason'] == 'stop'
                     content = response['choices'][0]['message']['content']
-                assert content == responses.excerpt_text(selected)
+                assert content == responses.excerpt_text(selected, limited=limited)
                 assert 'FORGED INPUT' not in content
             else:
                 assert response is provider_result
@@ -126,3 +127,12 @@ def test_continuing_completion_refreshes_context_and_processes_empty_selection(
     process_native_chat, stream, selected
 ):
     asyncio.run(process_native_chat(review=True, complete=True, stream=stream, selected=selected, continuing=True))
+
+
+@pytest.mark.parametrize('assessment', [
+    {'sufficient': False}, {'sufficient': True, 'missing': ['Missing relationship']},
+    {'sufficient': True, 'conflicts': ['Sources disagree']},
+])
+def test_partial_or_conflicting_server_assessment_is_visible_in_excerpt_reply(process_native_chat, assessment):
+    asyncio.run(process_native_chat(review=True, complete=True, stream=True, selected=[selected_passage()],
+                                   continuing=True, assessment=assessment, limited=True))

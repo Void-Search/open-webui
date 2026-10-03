@@ -28,7 +28,7 @@ def passage(source, text):
 
 def quoted_text(block):
     lines = [line.removeprefix('> ') if line != '>' else '' for line in block.splitlines()]
-    fence = lines[0].removesuffix('text')
+    fence = lines[0].removesuffix('ravenous-excerpt')
     assert len(fence) >= 3 and set(fence) == {'`'} and lines[-1] == fence
     return '\n'.join(lines[1:-1])
 
@@ -78,6 +78,26 @@ def test_excerpt_json_and_sse_deliver_identical_content_and_terminal_completion(
         assert frames[-1]['choices'][0]['finish_reason'] == 'stop'
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_partial_excerpts_mark_prior_details_unverified_without_rewriting_sources(stream):
+    selected = [passage('source', 'The gathering has refreshments.\nNo procession is described here.')]
+    response = responses.excerpt_response(selected, 'fixture', stream=stream, limited=True)
+    if stream:
+
+        async def content():
+            raw = ''.join([chunk async for chunk in response.body_iterator])
+            frame = json.loads(raw.split('\n\n', 1)[0].removeprefix('data: '))
+            return frame['choices'][0]['delta']['content']
+
+        text = asyncio.run(content())
+    else:
+        text = response['choices'][0]['message']['content']
+    assert text.startswith('These sources only partly support the request.')
+    assert 'Details from the earlier answer that are not supported below remain unverified.' in text
+    assert quoted_text(text.split('\n\n')[1]) == selected[0]['text']
+    assert text.endswith('[1]')
 
 
 def test_empty_excerpt_selection_does_not_invent_sources_or_claim_completeness():
@@ -139,7 +159,7 @@ console.log(JSON.stringify({ found, quotes: tokens.filter(item => item.type === 
     expected = expected.replace('![photo](https://untrusted.invalid/image)', 'photo')
     assert rendered['quotes'] == [expected]
     assert [token['ids'] for token in rendered['found'] if token['type'] == 'citation'] == [[1]]
-    assert [token.get('lang') for token in rendered['found'] if token['type'] == 'code'] == ['text']
+    assert [token.get('lang') for token in rendered['found'] if token['type'] == 'code'] == ['ravenous-excerpt']
     assert not any(token['type'] in ('html', 'link', 'image', 'heading', 'inlineKatex', 'blockKatex')
                    for token in rendered['found'])
 

@@ -88,6 +88,7 @@
 	export let floatingButtons = true;
 
 	export let editCodeBlock = true;
+	export let legacyResearchExcerpts = false;
 	export let topPadding = false;
 	export let allowEmbeds = false;
 
@@ -296,6 +297,7 @@
 			{done}
 			{allowEmbeds}
 			{editCodeBlock}
+			{legacyResearchExcerpts}
 			{topPadding}
 			{sourceIds}
 			renderMarkdown={$settings?.renderMarkdownInAssistantMessages ?? true}
@@ -321,6 +323,7 @@
 				{done}
 				{allowEmbeds}
 				{editCodeBlock}
+				{legacyResearchExcerpts}
 				{topPadding}
 				{sourceIds}
 				{onSourceClick}

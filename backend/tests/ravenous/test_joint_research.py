@@ -1063,7 +1063,8 @@ def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
             assert data['previous_answer'] == previous_answer
             texts = [item['text'] for item in data['passages']]
             assert repeat in texts
-            assert ('An incremental backup restores subsequent changes.' in texts) == has_addition
+            assert (addition in texts) == has_addition
+            assert data['evidence_unit'] == 'complete_source_section'
             assert snippet not in json.dumps(data['passages'])
             return {
                 'sufficient': has_addition,

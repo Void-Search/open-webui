@@ -11,7 +11,7 @@ from starlette.responses import StreamingResponse
 from .conversation import append_question, finish_output
 
 
-def excerpt_text(selected):
+def excerpt_text(selected, limited=False):
     """Quote final authorized passages without rewriting facts or source boundaries."""
     identifiers, excerpts = {}, []
     # Selection is already bounded by verification and the final context budget.
@@ -27,21 +27,26 @@ def excerpt_text(selected):
         # cannot close a fence longer than any run present in the passage.
         plain = links.sub(lambda match: match[1], text)
         fence = '`' * max(3, max((len(run) for run in re.findall(r'`+', plain)), default=0) + 1)
-        literal = f'{fence}text\n{plain}\n{fence}'
+        literal = f'{fence}ravenous-excerpt\n{plain}\n{fence}'
         quote = '\n'.join('> ' + line if line else '>' for line in literal.splitlines())
         excerpts.append(quote + f'\n\n[{number}]')
     if not excerpts:
         return 'I could not verify enough source detail to answer this request.'
+    introduction = (
+        'These sources only partly support the request. Details from the earlier answer that are not '
+        'supported below remain unverified.'
+        if limited
+        else 'Here are relevant source excerpts. Details not stated in them remain unverified.'
+    )
     return (
-        'Here are relevant source excerpts. Details not stated in them remain unverified; this is not '
-        'a complete list or a guarantee that every item is new.\n\n'
+        introduction + ' This is not a complete list or a guarantee that every item is new.\n\n'
         + '\n\n'.join(excerpts)
     )
 
 
-def excerpt_response(selected, model, stream=False):
+def excerpt_response(selected, model, stream=False, limited=False):
     """Use the ordinary completion processor for source events, persistence and SSE completion."""
-    text = excerpt_text(selected)
+    text = excerpt_text(selected, limited=limited)
     envelope = {
         'id': 'chatcmpl-ravenous-' + uuid.uuid4().hex,
         'created': int(time.time()),
