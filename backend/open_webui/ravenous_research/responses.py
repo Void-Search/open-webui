@@ -47,6 +47,11 @@ def excerpt_text(selected, limited=False):
 def excerpt_response(selected, model, stream=False, limited=False):
     """Use the ordinary completion processor for source events, persistence and SSE completion."""
     text = excerpt_text(selected, limited=limited)
+    return completion_response(text, model, stream)
+
+
+def completion_response(text, model, stream=False, usage=None):
+    """Deliver a completed answer after validation, in the client's original format."""
     envelope = {
         'id': 'chatcmpl-ravenous-' + uuid.uuid4().hex,
         'created': int(time.time()),
@@ -55,6 +60,7 @@ def excerpt_response(selected, model, stream=False, limited=False):
     if not stream:
         return {
             **envelope,
+            **({'usage': usage} if usage else {}),
             'object': 'chat.completion',
             'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
         }
@@ -63,6 +69,7 @@ def excerpt_response(selected, model, stream=False, limited=False):
         for delta, finish in [({'role': 'assistant', 'content': text}, None), ({}, 'stop')]:
             yield 'data: ' + json.dumps({
                 **envelope,
+                **({'usage': usage} if usage and finish else {}),
                 'object': 'chat.completion.chunk',
                 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}],
             }) + '\n\n'

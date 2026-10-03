@@ -1662,24 +1662,14 @@ async def chat_completion(
                 return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 
             if metadata.get('ravenous_retrieval_complete') and metadata.get('ravenous_review_previous_answer'):
-                from open_webui.ravenous_research.responses import excerpt_response
+                from open_webui.ravenous_research.answer_review import reviewed_response
 
-                # Researched follow-ups use final authorized source wording. Keep the
-                # normal response processor for citations, persistence and done.
-                # Suggested questions also synthesize claims from context. Do
-                # not reintroduce guessed associations after a quoted answer.
-                if tasks:
+                response, quoted = await reviewed_response(request, form_data, user, metadata,
+                                                           chat_completion_handler)
+                # Quoted fallbacks keep generated suggestions from reintroducing
+                # unsupported associations. Preserve normal persistence and SSE.
+                if quoted and tasks:
                     tasks = {**tasks, TASKS.FOLLOW_UP_GENERATION: False}
-                response = excerpt_response(
-                    metadata.get('ravenous_selected_passages', []),
-                    form_data['model'],
-                    stream=form_data.get('stream', False),
-                    limited=(
-                        metadata.get('ravenous_evidence_assessment', {}).get('sufficient') is False
-                        or bool(metadata.get('ravenous_evidence_assessment', {}).get('missing'))
-                        or bool(metadata.get('ravenous_evidence_assessment', {}).get('conflicts'))
-                    ),
-                )
             else:
                 response = await chat_completion_handler(request, form_data, user)
 

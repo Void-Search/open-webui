@@ -65,13 +65,13 @@ def failure_description(code):
     return messages.get(code, 'retrieval failed')
 
 
-def json_payload(model, instruction, data, response_format=None):
+def json_payload(model, instruction, data, response_format=None, max_tokens=1600):
     """Use the same complete request for token counting and generation."""
     return {
         'model': model,
         'stream': False,
         'temperature': 0,
-        'max_tokens': 1600,
+        'max_tokens': max_tokens,
         'chat_template_kwargs': {'enable_thinking': False},
         'response_format': response_format or {'type': 'json_object'},
         'messages': [{'role': 'system', 'content': instruction}, {'role': 'user', 'content': json.dumps(data)}],
@@ -79,13 +79,13 @@ def json_payload(model, instruction, data, response_format=None):
     }
 
 
-async def model_json(request, model, user, instruction, data, timeout=20, response_format=None):
+async def model_json(request, model, user, instruction, data, timeout=20, response_format=None, max_tokens=1600):
     from open_webui.utils.chat import generate_chat_completion
 
     response = await asyncio.wait_for(
         generate_chat_completion(
             request,
-            json_payload(model, instruction, data, response_format),
+            json_payload(model, instruction, data, response_format, max_tokens),
             user,
         ),
         timeout,

@@ -9,17 +9,23 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, status
-from open_webui.ravenous_research import evidence, responses
+from open_webui.ravenous_research import answer_review, evidence, responses
 from starlette.responses import JSONResponse, StreamingResponse
 
 
 @pytest.fixture
-def process_native_chat():
+def process_native_chat(monkeypatch):
     tree = ast.parse((Path(__file__).parents[2] / 'open_webui/main.py').read_text())
     function = next(node for node in ast.walk(tree)
                     if isinstance(node, ast.AsyncFunctionDef) and node.name == 'process_chat')
 
-    async def exercise(*, review, complete, stream, selected, continuing=False, assessment=None, limited=False):
+    async def exercise(*, review, complete, stream, selected, continuing=False, assessment=None, limited=False,
+                       draft_supported=True):
+        supported_input = bool(assessment and assessment.get('sufficient') is True and selected
+                               and not assessment.get('missing') and not assessment.get('conflicts'))
+        quoting = review and complete and not (
+            supported_input and draft_supported
+        )
         sources = evidence.source_groups(selected)
         events = [{'sources': sources}]
         server_metadata = {
@@ -30,20 +36,32 @@ def process_native_chat():
             'ravenous_evidence_assessment': assessment or {},
         }
         calls = []
-        provider_result = {'provider_response': True}
+        draft_text = 'Version 3 supports journal backups when the baseline is kept. [1]'
+        provider_result = {'choices': [{'message': {'content': draft_text}, 'finish_reason': 'stop'}]}
         tasks = {'follow_up_generation': True, 'title_generation': True}
 
         async def payload(_request, body, _user, _metadata, _model):
             calls.append('payload')
+            body['messages'] = [evidence.context_message(selected, 'Test request', assessment)]
             return body, server_metadata, events
 
         async def approved(*_args):
             calls.append('approved')
             return False
 
-        async def provider(*_args):
+        async def provider(_request, body, _user):
             calls.append('provider')
+            assert '<research_evidence>' in body['messages'][-1]['content']
+            assert 'FORGED INPUT' not in body['messages'][-1]['content']
+            if review and complete:
+                assert body['stream'] is False
             return provider_result
+
+        async def check_draft(*_args):
+            calls.append('draft_review')
+            return draft_supported
+
+        monkeypatch.setattr(answer_review, 'check_draft', check_draft)
 
         async def response_context(request, body, user, model, metadata, tasks, context_events):
             calls.append('context')
@@ -55,7 +73,7 @@ def process_native_chat():
             assert context['metadata']['sources'] == sources
             assert context['events'] == events
             assert context['form_data']['stream'] is stream
-            assert context['tasks']['follow_up_generation'] is not (review and complete)
+            assert context['tasks']['follow_up_generation'] is not quoting
             assert context['tasks']['title_generation'] is True
             if review and complete:
                 if stream:
@@ -69,7 +87,7 @@ def process_native_chat():
                 else:
                     assert response['choices'][0]['finish_reason'] == 'stop'
                     content = response['choices'][0]['message']['content']
-                assert content == responses.excerpt_text(selected, limited=limited)
+                assert content == (responses.excerpt_text(selected, limited=limited) if quoting else draft_text)
                 assert 'FORGED INPUT' not in content
             else:
                 assert response is provider_result
@@ -97,7 +115,7 @@ def process_native_chat():
         assert result == {'standard_processor_completed': True}
         assert tasks == {'follow_up_generation': True, 'title_generation': True}
         assert calls.count('response') == 1
-        assert ('provider' in calls) is not (review and complete)
+        assert ('provider' in calls) is (supported_input or not (review and complete))
         assert calls.index('payload') < calls.index('approved') < calls.index('response')
         if continuing:
             assert calls[0] == 'context' and calls.count('context') == 1
@@ -136,3 +154,16 @@ def test_continuing_completion_refreshes_context_and_processes_empty_selection(
 def test_partial_or_conflicting_server_assessment_is_visible_in_excerpt_reply(process_native_chat, assessment):
     asyncio.run(process_native_chat(review=True, complete=True, stream=True, selected=[selected_passage()],
                                    continuing=True, assessment=assessment, limited=True))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_verified_followup_is_synthesized_by_model_with_research_context(process_native_chat, stream):
+    asyncio.run(process_native_chat(review=True, complete=True, stream=stream,
+                                   selected=[selected_passage()], assessment={'sufficient': True}))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_unsupported_model_draft_never_reaches_response_processor(process_native_chat, stream):
+    asyncio.run(process_native_chat(review=True, complete=True, stream=stream,
+                                   selected=[selected_passage()], assessment={'sufficient': True},
+                                   draft_supported=False))

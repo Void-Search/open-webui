@@ -366,6 +366,9 @@ def context_message(selected, question, assessment=None):
         'role': 'system',
         'content': (
             'Answer the user question directly using only the supplied evidence, at the requested level of detail. '
+            'Combine relevant findings into a concise answer in your own words, using ordinary Markdown '
+            'paragraphs or lists. Do not reproduce page navigation, category labels, author biographies, '
+            'promotional offers or unrelated article teasers. '
             'For suggestions or lists without a requested count, give a short selection of the best-supported '
             'named items. Give the supported details that help the user '
             'choose or act. A list of categories or addresses without identifying what they refer to is not useful. '
