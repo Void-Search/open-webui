@@ -142,7 +142,10 @@ async def finalize(request, body, user, emit):
                 report['summary'] = (
                     'Answer basis: general knowledge; retrieval did not verify this answer. ' + report['summary']
                 )
-            fallback = fallback_message(question, report['summary'], source_limited=source_limited)
+            fallback = fallback_message(
+                question, report['summary'], source_limited=source_limited,
+                previous_answer=assessment.get('previous_answer', ''),
+            )
             body['messages'] = merge_system_messages(strip_empty_content_blocks([*messages, fallback]))
         recovery = state.get('recovery') or {
             'question': 'How would you like to continue?',

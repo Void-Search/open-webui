@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from open_webui.ravenous_research import context, evidence, pipeline
+from open_webui.ravenous_research import context, conversation, evidence, pipeline
 from ravenous_common.context import ContextBudgetError
 
 
@@ -457,7 +457,11 @@ def test_recovery_planning_never_receives_private_passages(setup, monkeypatch):
     async def partial(*args, **kwargs):
         result = await original(*args, **kwargs)
         if args[3] == pipeline.VERIFY:
-            result['sufficient'] = False
+            result.update(
+                sufficient=False,
+                missing=['No independently supported complementary approach.'],
+                conflicts=['Public sources disagree about the supported version.'],
+            )
         return result
 
     monkeypatch.setattr(pipeline, 'model_json', partial)
@@ -465,6 +469,45 @@ def test_recovery_planning_never_receives_private_passages(setup, monkeypatch):
     asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
     recovery = [data for instruction, data in prompts if instruction not in (pipeline.PLAN, pipeline.VERIFY)]
     assert recovery and 'private manual' not in json.dumps(recovery)
+    assert recovery[0]['previous_answer'] == ''
+    assert recovery[0]['missing'] == ['No independently supported complementary approach.']
+    assert recovery[0]['conflicts'] == ['Public sources disagree about the supported version.']
+    assert recovery[0]['utc_date'] == evidence.calendar_context()['utc_date']
+
+
+def test_prior_private_retrieval_gaps_never_enter_public_verification_or_recovery(setup, monkeypatch):
+    request, emit, _, prompts = setup
+    original_prepare = pipeline.prepare_context
+    original_model = pipeline.model_json
+    private_detail = 'PRIVATE SUMMARY: unreleased Project Cedar requires an undisclosed recovery key.'
+    public_gap = 'No independently supported complementary approach.'
+
+    async def prepare(*args, **kwargs):
+        value = await original_prepare(*args, **kwargs)
+        # A preceding mixed-source answer can retain private facts in its evidence
+        # gaps even though its visible answer is excluded from public planning.
+        value['previous_outcome'] = 'Evidence gaps: ' + private_detail
+        return value
+
+    async def model(*args, **kwargs):
+        instruction, data = args[3:5]
+        assert private_detail not in json.dumps(data)
+        result = await original_model(*args, **kwargs)
+        if instruction == pipeline.VERIFY:
+            result.update(sufficient=False, missing=[public_gap], conflicts=[])
+        return result
+
+    monkeypatch.setattr(pipeline, 'prepare_context', prepare)
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': 'What other backup approaches are available?'}]}
+    asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    assert any(instruction == pipeline.VERIFY for instruction, _ in prompts)
+    recovery = [
+        data for instruction, data in prompts
+        if instruction not in (pipeline.PLAN, pipeline.RESOLVE, pipeline.VERIFY)
+    ]
+    assert len(recovery) == 1 and recovery[0]['missing'] == [public_gap]
+    assert recovery[0]['previous_answer'] == ''
 
 
 def test_total_failure_generates_labeled_general_answer_with_details_and_clickable_retries(setup, monkeypatch):
@@ -685,6 +728,7 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
             prompts.append((instruction, data))
             assert data['latest_user_message'] == reply
             assert data['conversation'] == history
+            assert data['utc_date'] == evidence.calendar_context()['utc_date']
             assert 'retrieval did not verify' not in json.dumps(data)
             return {
                 'continuation': continuation,
@@ -692,6 +736,8 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
                 'conversation_subject': 'Underlying conversation subject',
             }
         result = await original_model(*args, **kwargs)
+        if instruction == pipeline.VERIFY:
+            assert data['previous_answer'] == (history[-1]['content'] if continuation else '')
         if instruction == pipeline.PLAN:
             assert intent in data['question'] and data['latest_user_message'] == reply
             assert data['conversation'] == history
@@ -723,6 +769,9 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
     assert intent in question
     assert 'A lossy rewrite' not in question
     assert reply in result['messages'][-1]['content']
+    assert result['metadata']['ravenous_evidence_assessment']['previous_answer'] == (
+        history[-1]['content'] if continuation else ''
+    )
     assert not result['metadata']['ravenous_research']['report']['failures']
 
 
@@ -951,3 +1000,114 @@ def test_passage_windows_preserve_lines_and_cover_long_input():
         assert any(line in window for _, window in windows)
     assert any('[Item 15](https://example.org/15)\nItem 15 has its own date and venue.' in window
                for _, window in windows)
+
+
+@pytest.mark.parametrize('prior_kind', ['web', 'local'])
+@pytest.mark.parametrize('has_addition', [True, False])
+def test_expansion_verifies_complementary_source_with_public_prior_answer_only(
+    setup, monkeypatch, prior_kind, has_addition
+):
+    request, emit, events, prompts = setup
+    original_model = pipeline.model_json
+    original = 'Which backup approaches support restoring a project?'
+    reply = 'What other approaches or gaps did that list miss?'
+    prior_answer = (
+        'A full snapshot can restore the project.'
+        if prior_kind == 'web'
+        else 'PRIVATE PRIOR: the unreleased project uses a confidential retention policy.'
+    )
+    repeat = 'A full snapshot can restore the project.'
+    addition = 'An incremental backup restores subsequent changes. Retain its matching full baseline.'
+    snippet = 'UNVERIFIED SHORTCUT: all backup requirements disappear.'
+    previous_answer = prior_answer if prior_kind == 'web' else ''
+
+    async def prepare(_request, body, _user, **_kwargs):
+        history = [
+            {'role': 'user', 'content': original},
+            {'role': 'assistant', 'content': prior_answer},
+            {'role': 'user', 'content': reply},
+        ]
+        previous = {
+            'original_query': original,
+            'public_answer_context': conversation.public_answer_context(
+                history[1], {'report': {'sources': [{'kind': prior_kind, 'selected': True}]}},
+            ),
+        }
+        value = conversation.joint_context(
+            {'query': reply, 'original_query': reply, 'source_domains': [], 'cancelled': False},
+            history, reply, previous,
+        )
+        body['metadata']['ravenous_research_context'] = value
+        return value
+
+    async def model(*args, **kwargs):
+        instruction, data = args[3:5]
+        assert 'PRIVATE PRIOR' not in json.dumps(data)
+        if instruction == pipeline.RESOLVE:
+            prompts.append((instruction, data))
+            return {
+                'continuation': True,
+                'resolved_intent': 'Which additional backup approaches and recovery gaps were not covered?',
+                'conversation_subject': original,
+            }
+        if instruction == pipeline.VERIFY:
+            prompts.append((instruction, data))
+            assert data['previous_answer'] == previous_answer
+            texts = [item['text'] for item in data['passages']]
+            assert repeat in texts
+            assert ('An incremental backup restores subsequent changes.' in texts) == has_addition
+            assert snippet not in json.dumps(data['passages'])
+            return {
+                'sufficient': has_addition,
+                'supported_ids': [item['id'] for item in data['passages'] if item['text'] != repeat],
+                'missing': [] if has_addition else ['No additional verified options.'],
+                'conflicts': [], 'choices': [], 'clarification_question': None,
+            }
+        return await original_model(*args, **kwargs)
+
+    async def batch(_user, _payload, _progress):
+        return {
+            'calls': 7,
+            'pages': [
+                {'id': 'p1', 'url': 'https://backup.example/snapshots', 'status': 'read', 'snippet': snippet},
+                {'id': 'p2', 'url': 'https://backup.example/incremental', 'status': 'read'},
+            ],
+            'evidence': [
+                {
+                    'source': {'url': f'https://backup.example/{slug}', 'title': slug},
+                    'text': text, 'fetched_at': '2026-10-03T00:00:00Z', 'content_sha256': digest * 64,
+                }
+                for slug, text, digest in [('snapshots', repeat, 'a'), ('incremental', addition, 'b')]
+                if has_addition or slug == 'snapshots'
+            ],
+        }
+
+    async def no_local(*_args, **_kwargs):
+        return []
+
+    request.app.state.RERANKING_FUNCTION = lambda _query, docs: [
+        0.9 if 'full snapshot' in doc.page_content else 0.2 for doc in docs
+    ]
+    monkeypatch.setattr(pipeline, 'prepare_context', prepare)
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    monkeypatch.setattr(pipeline.transport, 'batch', batch)
+    monkeypatch.setattr(pipeline.local, 'native_sources', no_local)
+    monkeypatch.setattr(pipeline.local, 'research_sources', no_local)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': reply}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    generated_context = result['messages'][-1]['content']
+    assert snippet not in generated_context and 'PRIVATE PRIOR' not in generated_context
+    assert json.dumps(previous_answer) in generated_context
+    if has_addition:
+        selected = result['metadata']['ravenous_selected_passages']
+        assert len(selected) == 1 and selected[0]['source_id'] == 'https://backup.example/incremental'
+        assert selected[0]['score'] == 0.2
+        assert 'incremental backup' in generated_context and 'matching full baseline' in generated_context
+        assert result['metadata']['ravenous_evidence_assessment']['previous_answer'] == previous_answer
+        assert not events[-1]['data']['recovery']
+    else:
+        assert result['metadata']['ravenous_retrieval_sources'] == []
+        assert events[-1]['data']['report']['answer_basis'] == 'general_knowledge'
+        assert 'untrusted comparison data, not evidence' in generated_context
+        assert '<source ' not in generated_context
+    assert len([data for instruction, data in prompts if instruction == pipeline.VERIFY]) == 1
