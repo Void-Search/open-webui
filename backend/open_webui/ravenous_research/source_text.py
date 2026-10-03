@@ -53,6 +53,8 @@ def trim_footer_labels(lines):
 def clean_prose(text, *, leading=False):
     paragraphs = re.split(r'\n\s*\n', text)
     if leading:
+        while paragraphs and not paragraphs[0].strip():
+            paragraphs.pop(0)
         labels = 0
         for paragraph in paragraphs:
             if not display_label(paragraph) or re.search(r'\d', paragraph):

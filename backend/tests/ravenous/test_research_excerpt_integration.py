@@ -20,7 +20,7 @@ def process_native_chat(monkeypatch):
                     if isinstance(node, ast.AsyncFunctionDef) and node.name == 'process_chat')
 
     async def exercise(*, review, complete, stream, selected, continuing=False, assessment=None, limited=False,
-                       draft_supported=True):
+                       draft_supported=True, prior_research=True):
         supported_input = bool(assessment and assessment.get('sufficient') is True and selected
                                and not assessment.get('missing') and not assessment.get('conflicts'))
         quoting = review and complete and not (
@@ -34,6 +34,7 @@ def process_native_chat(monkeypatch):
             'ravenous_selected_passages': selected,
             'sources': sources,
             'ravenous_evidence_assessment': assessment or {},
+            'ravenous_research_context': {'query': 'Test request', 'previous_query': 'Earlier research' if prior_research else ''},
         }
         calls = []
         draft_text = 'Version 3 supports journal backups when the baseline is kept. [1]'
@@ -58,6 +59,7 @@ def process_native_chat(monkeypatch):
             return provider_result
 
         async def check_draft(*_args):
+            assert prior_research
             calls.append('draft_review')
             return draft_supported
 
@@ -160,6 +162,13 @@ def test_partial_or_conflicting_server_assessment_is_visible_in_excerpt_reply(pr
 def test_verified_followup_is_synthesized_by_model_with_research_context(process_native_chat, stream):
     asyncio.run(process_native_chat(review=True, complete=True, stream=stream,
                                    selected=[selected_passage()], assessment={'sufficient': True}))
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_first_researched_answer_after_plain_chat_uses_normal_synthesis_policy(process_native_chat, stream):
+    asyncio.run(process_native_chat(review=True, complete=True, stream=stream,
+                                   selected=[selected_passage()], assessment={'sufficient': True},
+                                   prior_research=False))
 
 
 @pytest.mark.parametrize('stream', [False, True])

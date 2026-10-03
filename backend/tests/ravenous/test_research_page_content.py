@@ -93,6 +93,7 @@ def test_article_masthead_labels_are_removed_without_cutting_conditions():
     assert cleaned.startswith('Most of us procrastinate.')
     assert 'News' not in cleaned and 'Mechanical' not in cleaned
     assert cleaned.endswith('Only with a realistic goal')
+    assert clean_web_text('\n\n' + text) == cleaned
     assert clean_web_text('Only with permission\n\nBefore beginning\n\nProceed carefully.') == (
         'Only with permission\n\nBefore beginning\n\nProceed carefully.')
     assert clean_web_text('2026\n\nNews\n\nThis report applies to the stated year.') == (

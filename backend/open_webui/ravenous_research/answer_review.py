@@ -1,6 +1,7 @@
 """Synthesize supported follow-ups and check the draft before sending it."""
 
 import asyncio
+import logging
 import re
 import time
 
@@ -9,6 +10,8 @@ from ravenous_common.context import ContextBudgetError
 from starlette.responses import JSONResponse
 
 from . import context, local, pipeline, responses
+
+log = logging.getLogger(__name__)
 
 REVIEW = (
     'Check a drafted answer against the supplied source passages. Return ONLY JSON with '
@@ -143,12 +146,19 @@ async def reviewed_response(request, body, user, metadata, complete):
             if (choice.get('finish_reason') == 'stop' and isinstance(text, str) and text.strip()
                     and not choice['message'].get('tool_calls')
                     and not borrowed_unsupported_terms(text, assessment.get('previous_answer') or '', selected)):
-                accepted = await asyncio.wait_for(
-                    check_draft(request, body, user, text, selected,
-                                (metadata.get('ravenous_research_context') or {}).get('query', ''),
-                                max(0.01, deadline - time.monotonic())),
-                    max(0.01, deadline - time.monotonic()),
-                )
+                research_context = metadata.get('ravenous_research_context') or {}
+                if research_context.get('previous_query'):
+                    accepted = await asyncio.wait_for(
+                        check_draft(request, body, user, text, selected,
+                                    research_context.get('query', ''),
+                                    max(0.01, deadline - time.monotonic())),
+                        max(0.01, deadline - time.monotonic()),
+                    )
+                else:
+                    # A first researched answer after ordinary conversation uses
+                    # the same synthesis policy as a first-turn research request.
+                    # Topic continuation alone does not inherit researched claims.
+                    accepted = True
                 usage = draft.get('usage')
         except HTTPException:
             raise
@@ -163,7 +173,9 @@ async def reviewed_response(request, body, user, metadata, complete):
             if failures:
                 raise HTTPException(403, 'Research source access changed before the answer was ready.')
     if accepted:
+        log.info('Research answer delivered as model synthesis')
         return responses.completion_response(text, body['model'], body.get('stream', False), usage), False
+    log.info('Research answer delivered as conservative source excerpts')
     limited = (assessment.get('sufficient') is False or bool(assessment.get('missing'))
                or bool(assessment.get('conflicts')))
     return responses.excerpt_response(selected, body['model'], body.get('stream', False), limited), True

@@ -95,7 +95,8 @@ def test_unavailable_draft_review_falls_back_without_sending_draft(monkeypatch, 
     selected = [passage()]
     response, quoted = asyncio.run(answer_review.reviewed_response(
         None, body, None, {'ravenous_selected_passages': selected,
-                          'ravenous_evidence_assessment': {'sufficient': True}}, complete))
+                          'ravenous_evidence_assessment': {'sufficient': True},
+                          'ravenous_research_context': {'previous_query': 'Earlier research'}}, complete))
     assert quoted and body['stream'] is False
     assert response['choices'][0]['message']['content'] == responses.excerpt_text(selected)
     assert 'UNSUPPORTED DRAFT' not in response['choices'][0]['message']['content']
