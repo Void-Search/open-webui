@@ -372,6 +372,15 @@ def context_message(selected, question, assessment=None):
             *['Source disagreement: ' + str(value)[:300] for value in conflicts[:6]],
         ]
     )
+    if (assessment or {}).get('verified_details'):
+        guidance += (
+            '\nFor this named lookup, answer only with these verified requested details. '
+            'Other names appearing in the source sections do not establish their requested details. '
+            'Preserve governing conditions; say remaining details are unverified without listing '
+            'unsupported claims. Do not repeat the earlier list. Verified details: '
+            + json.dumps([{**detail, 'citation': f'[{identifiers[detail["source_id"]]}]'}
+                          for detail in assessment['verified_details'] if detail['source_id'] in identifiers])
+        )
     return {
         'role': 'system',
         'content': (

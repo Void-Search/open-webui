@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from ravenous_common.context import ContextBudgetError
 from starlette.responses import JSONResponse
 
-from . import context, local, pipeline, responses
+from . import context, evidence, local, pipeline, responses
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +163,18 @@ async def reviewed_response(request, body, user, metadata, complete):
         try:
             draft_body = {**body, 'stream': False, 'temperature': 0,
                           'chat_template_kwargs': {**body.get('chat_template_kwargs', {}), 'enable_thinking': False}}
+            original = metadata.get('ravenous_evidence_message')
+            if research_context.get('previous_query') and original:
+                # Reference resolution has already read the authorized history.
+                # Generate from the resolved request and current evidence, without
+                # earlier assistant claims tempting the model to fill source gaps.
+                draft_body['messages'] = [message for message in body['messages']
+                                          if message['role'] in ('system', 'user') and message.get('content') != original]
+                question = research_context.get('query', '')
+                draft_body['messages'].extend([
+                    {'role': 'user', 'content': question},
+                    evidence.context_message(selected, question, {**assessment, 'previous_answer': ''}),
+                ])
             draft = await asyncio.wait_for(complete(request, draft_body, user), 40)
             if isinstance(draft, JSONResponse):
                 if draft.status_code >= 400:
@@ -202,7 +214,15 @@ async def reviewed_response(request, body, user, metadata, complete):
     if accepted:
         log.info('Research answer delivered as model synthesis')
         return responses.completion_response(text, body['model'], body.get('stream', False), usage), False
-    log.info('Research answer delivered as conservative source excerpts')
     limited = (assessment.get('sufficient') is False or bool(assessment.get('missing'))
                or bool(assessment.get('conflicts')))
+    details = assessment.get('verified_details') or []
+    if details and not assessment.get('conflicts'):
+        names = research_context.get('referenced_entities', [])
+        limited = limited or len({detail['entity'] for detail in details}) < len(names)
+        text = responses.details_text(details, selected, limited)
+        if text:
+            log.info('Research answer delivered as verified lookup details')
+            return responses.completion_response(text, body['model'], body.get('stream', False)), True
+    log.info('Research answer delivered as conservative source excerpts')
     return responses.excerpt_response(selected, body['model'], body.get('stream', False), limited), True

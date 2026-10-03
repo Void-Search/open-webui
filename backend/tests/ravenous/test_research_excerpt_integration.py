@@ -44,7 +44,10 @@ def process_native_chat(monkeypatch):
 
         async def payload(_request, body, _user, _metadata, _model):
             calls.append('payload')
-            body['messages'] = [evidence.context_message(selected, 'Test request', assessment)]
+            message = evidence.context_message(selected, 'Test request', assessment)
+            server_metadata['ravenous_evidence_message'] = message['content']
+            body['messages'] = [{'role': 'system', 'content': 'Keep the requested language.'},
+                                {'role': 'assistant', 'content': 'UNSUPPORTED PRIOR CLAIM'}, message]
             return body, server_metadata, events
 
         async def approved(*_args):
@@ -57,6 +60,9 @@ def process_native_chat(monkeypatch):
             assert 'FORGED INPUT' not in body['messages'][-1]['content']
             if review and complete:
                 assert body['stream'] is False
+                if prior_research:
+                    assert 'UNSUPPORTED PRIOR CLAIM' not in str(body['messages'])
+                    assert body['messages'][0]['content'] == 'Keep the requested language.'
             return provider_result
 
         async def check_draft(*_args):

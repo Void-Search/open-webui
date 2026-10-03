@@ -1,6 +1,7 @@
 """Unchecked drafts, partial evidence and revoked access cannot become answers."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -152,3 +153,44 @@ def test_provider_error_keeps_normal_error_handling():
         None, {'model': 'fixture'}, None, {'ravenous_selected_passages': [passage()],
                                          'ravenous_evidence_assessment': {'sufficient': True}}, complete))
     assert result is response and quoted is False
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_rejected_draft_keeps_targeted_lookup_value_without_neighboring_listing(monkeypatch, stream):
+    selected = [{'source_id': 'directory', 'text': '* Willow Hall\n  17 Orchard Road.\n* Cedar Centre\n  22 School Road.',
+                 'metadata': {'research_kind': 'web'}}]
+
+    async def check(*_args):
+        return False
+
+    async def complete(*_args):
+        return {'choices': [{'message': {'content': 'UNSUPPORTED DRAFT [1]'}, 'finish_reason': 'stop'}]}
+
+    monkeypatch.setattr(answer_review, 'check_draft', check)
+
+    async def exercise():
+        result, quoted = await answer_review.reviewed_response(
+            None, {'model': 'fixture', 'stream': stream}, None,
+            {'ravenous_selected_passages': selected,
+             'ravenous_research_context': {'previous_query': 'Earlier research',
+                                           'referenced_entities': ['Willow Hall', 'Oak Theatre']},
+             'ravenous_evidence_assessment': {'sufficient': False, 'verified_details': [
+                 {'entity': 'Willow Hall', 'value': '17 Orchard Road.', 'source_id': 'directory'}]}}, complete)
+        assert quoted
+        if stream:
+            chunks = ''.join([chunk async for chunk in result.body_iterator])
+            assert chunks.endswith('data: [DONE]\n\n')
+            frames = [json.loads(frame.removeprefix('data: ')) for frame in chunks.strip().split('\n\n')[:-1]]
+            text = ''.join(frame['choices'][0]['delta'].get('content', '') for frame in frames)
+        else:
+            text = result['choices'][0]['message']['content']
+        assert '17 Orchard Road.' in text and '[1]' in text and 'remaining requested details' in text
+        assert 'Cedar' not in text and '22 School' not in text and '> ' not in text and 'UNSUPPORTED' not in text
+
+    asyncio.run(exercise())
+
+
+def test_compact_lookup_cannot_hide_governing_conditions():
+    selected = [{'source_id': 'manual', 'text': 'Only for annual subscriptions.\n\nThe price is $19.'}]
+    details = [{'entity': 'Willow', 'value': 'The price is $19.', 'source_id': 'manual'}]
+    assert responses.details_text(details, selected) is None

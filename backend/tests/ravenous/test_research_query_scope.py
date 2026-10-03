@@ -114,7 +114,8 @@ def test_matching_name_cannot_be_substituted_for_requested_detail(monkeypatch):
     async def model(_request, _model, _user, instruction, data, **kwargs):
         assert instruction == pipeline.VERIFY_DETAILS
         assert kwargs['response_format']['json_schema']['schema']['properties']['evidence']
-        return {'requested_detail': 'exact address', 'evidence': [{'id': 'e1', 'value': 'Willow Hall, Oxford'}],
+        return {'requested_detail': 'exact address',
+                'evidence': [{'id': 'e1', 'entity': 'Willow Hall, Oxford', 'value': 'Willow Hall, Oxford'}],
                 'sufficient': True, 'supported_ids': ['e1'], 'missing': [], 'conflicts': []}
 
     monkeypatch.setattr(pipeline, 'model_json', model)
@@ -125,11 +126,44 @@ def test_matching_name_cannot_be_substituted_for_requested_detail(monkeypatch):
 def test_requested_values_need_literal_support_in_the_selected_passage():
     refs = {'e1': ({}, 'Meet at Willow Hall\n17 Orchard Road, Oxford.'),
             'e2': ({}, 'Oak Theatre is open today.')}
-    result = {'evidence': [{'id': 'e1', 'value': '17 orchard road, Oxford.'},
-                           {'id': 'e2', 'value': '17 Orchard Road, Oxford.'},
-                           {'id': 'e1', 'value': '17 Orchard Lane, Oxford.'},
-                           {'id': 'e2', 'value': 'at Willow Hall'}]}
+    result = {'evidence': [{'id': 'e1', 'entity': 'Willow Hall', 'value': '17 orchard road, Oxford.'},
+                           {'id': 'e2', 'entity': 'Willow Hall', 'value': '17 Orchard Road, Oxford.'},
+                           {'id': 'e1', 'entity': 'Willow Hall', 'value': '17 Orchard Lane, Oxford.'},
+                           {'id': 'e2', 'entity': 'Willow Hall', 'value': 'at Willow Hall'}]}
     assert pipeline.detail_ids(result, refs, ['Willow Hall', 'Oak Theatre']) == {'e1'}
+
+
+def test_directory_value_cannot_belong_to_a_neighboring_item():
+    item = {'source_id': 'directory', 'source': {'name': 'Venues in Oxford'}}
+    record = '* Willow Hall\n  Address: 17 Orchard Road.\n* Cedar Centre\n  Address: 22 School Road.'
+    result = {'supported_ids': ['e1'], 'evidence': [
+        {'id': 'e1', 'entity': 'Willow Hall', 'value': '22 School Road.'},
+    ]}
+    assert pipeline.detail_ids(result, {'e1': (item, record)}, ['Willow Hall']) == set()
+    result = {'supported_ids': ['e1'], 'evidence': [
+        {'id': 'e1', 'entity': 'Willow Hall', 'value': '17 Orchard Road.'},
+    ]}
+    assert pipeline.detail_ids(result, {'e1': (item, record)}, ['Willow Hall']) == {'e1'}
+    assert result['verified_details'] == [{'entity': 'Willow Hall', 'value': '17 Orchard Road.',
+                                          'source_id': 'directory'}]
+
+
+def test_one_verified_value_does_not_make_the_other_named_items_complete(monkeypatch):
+    research = research_state('What are their addresses?')
+    research.metadata['ravenous_review_previous_answer'] = True
+    research.metadata['ravenous_research_context'] = {'referenced_entities': ['Willow Hall', 'Oak Theatre']}
+    item = {'id': 'contact', 'source_id': 'contact', 'text': 'Willow Hall\n17 Orchard Road.',
+            'source': {'name': 'Willow Hall Contact'}, 'metadata': {'research_kind': 'web'}}
+
+    async def model(*_args, **_kwargs):
+        return {'requested_detail': 'addresses', 'evidence': [
+            {'id': 'e1', 'entity': 'Willow Hall', 'value': '17 Orchard Road.'}],
+            'sufficient': True, 'supported_ids': ['e1'], 'missing': [], 'conflicts': []}
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    result = asyncio.run(research.assess([item]))
+    assert result['supported_ids'] == ['contact'] and result['sufficient'] is False
+    assert 'Oak Theatre' in str(result['missing'])
 
 
 @pytest.mark.parametrize('previous,latest,before,after', [

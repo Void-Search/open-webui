@@ -99,7 +99,7 @@ async def model_json(request, model, user, instruction, data, timeout=20, respon
     return value
 
 
-def assessment_format(references, details=False):
+def assessment_format(references, details=False, names=()):
     """Bound verifier output and constrain references to supplied source sentences."""
     short_list = {'type': 'array', 'items': {'type': 'string', 'maxLength': 160}, 'maxItems': 4}
     properties = {
@@ -120,8 +120,9 @@ def assessment_format(references, details=False):
             'evidence': {'type': 'array', 'maxItems': MAX_SUPPORTED_SENTENCES, 'items': {
                 'type': 'object', 'properties': {
                     'id': {'type': 'string', 'enum': list(references)},
+                    'entity': {'type': 'string', 'enum': list(names)},
                     'value': {'type': ['string', 'null'], 'maxLength': 400},
-                }, 'required': ['id', 'value'], 'additionalProperties': False,
+                }, 'required': ['id', 'entity', 'value'], 'additionalProperties': False,
             }},
             **properties,
         }
@@ -228,14 +229,16 @@ VERIFY = (
 
 VERIFY_DETAILS = (
     'Verify evidence for the LATEST user request (user_context). Return ONLY the requested JSON. '
-    'First identify requested_detail, then collect evidence with an id and a value copied EXACTLY '
+    'First identify requested_detail, then collect evidence with an id, entity copied from '
+    'referenced_entities, and a value copied EXACTLY '
     'from that passage, or null if the requested detail is absent. Only then decide supported_ids '
     'and sufficient. The previous question and answer identify unverified lookup targets, not facts. '
     'A matching name or general topic is not the requested detail. An event card with a venue name '
     'and date does not give its street address; a product name does not give its price or specifications. '
     'Do not select such a passage or substitute its name for the missing detail. '
     'Reject menus, directory introductions, save/share controls, advertising and unrelated items. '
-    'Retain source conditions. Never borrow a detail from a different entity, place, version or period. '
+    'Include governing conditions in copied values. A value must belong to that entity, not a '
+    'neighboring list item. Never borrow a detail from a different entity, place, version or period. '
     'Use the supplied calendar for a requested week/weekend; stable entity details do not require '
     'an event date unless the latest request asks for timing. Select complete sections only. '
     'If no passage supplies the requested detail, supported_ids=[] and sufficient=false. '
@@ -254,15 +257,30 @@ def detail_ids(result, references, names):
         raise ValueError('Invalid requested-detail evidence')
     name_words = set(re.findall(r'\w+', ' '.join(names).casefold())) | {'at', 'in', 'the', 'a', 'an', 'of', 'for'}
     supported = set()
+    values = []
     for claim in claims:
         if not isinstance(claim, dict):
             continue
-        key, value = claim.get('id'), claim.get('value')
-        if key not in references or not isinstance(value, str) or not value.strip():
+        key, value, entity = claim.get('id'), claim.get('value'), claim.get('entity')
+        if key not in references or entity not in names or not isinstance(value, str) or not value.strip():
             continue
+        item, record = references[key]
+        entity_words = set(re.findall(r'\w+', entity.casefold()))
+        title_words = set(re.findall(r'\w+', item.get('source', {}).get('name', '').casefold()))
+        # Details on a named subject page may span contact lines. A directory
+        # needs the entity and value in the same paragraph or list item.
+        records = [record] if entity_words <= title_words else re.split(
+            r'\n\s*\n|(?=\n[ \t]{0,3}(?:[-*+]|\d+[.)])\s+)', record)
+        nearby = [part for part in records if entity_words <= set(re.findall(r'\w+', part.casefold()))]
         words = set(re.findall(r'\w+', value.casefold()))
-        if (words - name_words and ' '.join(value.casefold().split()) in ' '.join(references[key][1].casefold().split())):
+        if (words - name_words and any(' '.join(value.casefold().split()) in ' '.join(part.casefold().split())
+                                      for part in nearby)):
             supported.add(key)
+            if key in result.get('supported_ids', []):
+                detail = {'entity': entity, 'value': value, 'source_id': item.get('source_id')}
+                if detail not in values:
+                    values.append(detail)
+    result['verified_details'] = values
     return supported
 
 
@@ -623,7 +641,7 @@ class NativeResearch:
             references, data = self.assessment_input(items)
             details = bool(data['referenced_entities'])
             return json_payload(self.body['model'], VERIFY_DETAILS if details else VERIFY, data,
-                                assessment_format(references, details))
+                                assessment_format(references, details, data['referenced_entities']))
 
         # Sentence references, source metadata and instructions make verification
         # larger than the answer prompt. Count this exact request and output reserve.
@@ -720,7 +738,7 @@ class NativeResearch:
                 # a small local model. Keep verification inside the shared
                 # 135-second budget and leave time for final authorization.
                 timeout=min(60, max(0.01, self.remaining() - 5)),
-                response_format=assessment_format(references, details),
+                response_format=assessment_format(references, details, data['referenced_entities']),
             )
         except TimeoutError as exc:
             raise AssessmentTimeout from exc
@@ -735,10 +753,14 @@ class NativeResearch:
             raise ValueError('Invalid evidence assessment')
         if details:
             supported_details = detail_ids(result, references, data['referenced_entities'])
-            if any(key not in supported_details for key in identifiers):
+            missing_names = [name for name in data['referenced_entities']
+                             if name not in {detail['entity'] for detail in result['verified_details']}]
+            if any(key not in supported_details for key in identifiers) or missing_names:
                 identifiers = [key for key in identifiers if key in supported_details]
                 result['sufficient'] = False
-                result['missing'] = [*result.get('missing', []), 'Some requested details were not established.'][:4]
+                gap = ('Requested details remain unverified for: ' + ', '.join(missing_names)
+                       if missing_names else 'Some requested details were not established.')
+                result['missing'] = [*result.get('missing', []), gap][:4]
         supported = {}
         for key, (item, sentence) in references.items():
             if key in identifiers:
@@ -1069,10 +1091,10 @@ class NativeResearch:
         self.assessment['previous_outcome'] = self.metadata.get('ravenous_research_context', {}).get(
             'previous_outcome', ''
         )
+        self.metadata['ravenous_evidence_assessment'] = self.assessment
         if self.selected:
             # Rebuild from verified passages only. Every citation is tied to this exact set.
             message = evidence.context_message(self.selected, self.question, self.assessment)
-            self.metadata['ravenous_evidence_assessment'] = self.assessment
             self.body['messages'].append(message)
             self.metadata['ravenous_evidence_message'] = message['content']
             self.metadata['ravenous_selected_passages'] = self.selected

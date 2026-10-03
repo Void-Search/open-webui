@@ -50,6 +50,44 @@ def excerpt_response(selected, model, stream=False, limited=False):
     return completion_response(text, model, stream)
 
 
+def details_text(details, selected, limited=False):
+    """Present literal lookup values without dumping unrelated source sections.
+
+    Complete sections remain attached to citations. A compact value cannot omit
+    a recognizable governing condition; keep the complete quotation in that case.
+    """
+    identifiers = {}
+    for item in selected:
+        identifiers.setdefault(item['source_id'], len(identifiers) + 1)
+    values = {}
+    for detail in details:
+        entity, value, source_id = detail['entity'], detail['value'], detail['source_id']
+        if source_id not in identifiers:
+            continue
+        records = [item['text'] for item in selected if item['source_id'] == source_id
+                   and ' '.join(value.casefold().split()) in ' '.join(item['text'].casefold().split())]
+        if not records:
+            continue
+        for record in records:
+            for paragraph in re.split(r'\n\s*\n', record):
+                if re.search(r'\b(?:only|unless|except|requires?|required|must|without)\b|subject to|provided that',
+                             paragraph, re.I) and ' '.join(paragraph.split()) not in ' '.join(value.split()):
+                    return None
+        # Keep the most complete copied value for each requested name.
+        if entity not in values or len(value) > len(values[entity]['value']):
+            values[entity] = detail
+    if not values:
+        return None
+    sections = []
+    for detail in values.values():
+        entity = re.sub(r'([\\`*_\[\]])', r'\\\1', detail['entity'])
+        text = '**' + entity + '**\n\n' + detail['value']
+        fence = '`' * max(3, max((len(run) for run in re.findall(r'`+', text)), default=0) + 1)
+        sections.append(f'{fence}ravenous-excerpt\n{text}\n{fence}\n\n[{identifiers[detail["source_id"]]}]')
+    return ('These are the requested details stated in the sources:\n\n' + '\n\n'.join(sections)
+            + ('\n\nI could not verify the remaining requested details.' if limited else ''))
+
+
 def completion_response(text, model, stream=False, usage=None):
     """Deliver a completed answer after validation, in the client's original format."""
     envelope = {
