@@ -63,6 +63,7 @@ def joint_context(context, messages, reply, previous):
         history=prior,
         previous_original_query=previous.get('original_query', ''),
         previous_source_domains=previous.get('source_domains', []),
+        previous_referenced_entities=previous.get('referenced_entities', []),
     )
     return context
 
@@ -210,6 +211,9 @@ async def prepare_context(request, form_data, user, *, chats=None, resolver=None
             context['retrieval_mode'] = choice['mode']
             context['continuation'] = True
             context['review_previous_answer'] = pending.get('review_previous_answer') is True
+            context['intent_resolved'] = True
+            context['resolved_intent'] = intent
+            context['referenced_entities'] = pending.get('referenced_entities', [])
         elif joint:
             # Ordinary follow-ups are resolved once from conversation + latest turn,
             # not as answers to a technical retry prompt from a previous result.
@@ -246,6 +250,7 @@ async def remember_result(metadata, user, result, *, chats=None):
         state.update(
             pipeline='joint',
             review_previous_answer=metadata.get('ravenous_review_previous_answer') is True,
+            referenced_entities=context.get('referenced_entities', []),
             report=result['report'],
             recovery=result.get('recovery'),
             response_notice=result.get('response_notice'),

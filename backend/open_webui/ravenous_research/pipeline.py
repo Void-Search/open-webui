@@ -159,6 +159,9 @@ RESOLVE = (
     'products to their actual names. Copy the relevant names, not whole claims, dates or descriptive '
     'sentences. Use [] for a topic reset or when no previous named items are referenced. These names '
     'are unverified lookup targets, never evidence that an earlier claim is true. Name them in resolved_intent.\n'
+    'previous_referenced_entities retains unverified lookup names from an earlier public answer when '
+    'the latest answer was partial. Use those names to resolve references to remaining items; '
+    'do not replace them with unrelated new items.\n'
     'A request about costs, support, eligibility, alternatives, providers or next steps usually asks '
     'about the previous subject. This remains true for complete sentences without pronouns. Repeating '
     'a location or audience while omitting the subject DOES NOT reset the subject. Keep the previous '
@@ -317,19 +320,20 @@ def continued_question(intent, context):
     return question
 
 
-def referenced_entities(values, history):
+def referenced_entities(values, history, previous_names=()):
     """Accept lookup names only from the already-authorized public answer."""
     previous = next((item.get('content', '') for item in reversed(history)
                      if item.get('role') == 'assistant'), '')
     if not isinstance(previous, str) or not isinstance(values, list):
         return []
     names = []
+    saved = previous_names if isinstance(previous_names, (list, tuple)) else ()
     for value in values[:5]:
         if (isinstance(value, str) and 2 <= len(value.strip()) <= 160
                 and any(character.isalpha() for character in value)
                 and '\n' not in value and '\r' not in value):
             value = value.strip()
-            if re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', previous) and value not in names:
+            if (value in saved or re.search(r'(?<!\w)' + re.escape(value) + r'(?!\w)', previous)) and value not in names:
                 names.append(value)
     return names
 
@@ -976,6 +980,7 @@ class NativeResearch:
                     'conversation': context.get('history', []),
                     'previous_user_request': followup_scope(context),
                     'previous_resolved_question': context.get('previous_query', ''),
+                    'previous_referenced_entities': context.get('previous_referenced_entities', []),
                     'clarification_question': context.get('clarification_question'),
                     **self.calendar,
                 },
@@ -993,7 +998,8 @@ class NativeResearch:
             context['conversation_subject'] = resolved_question(result.get('conversation_subject'), '')
             if result['continuation']:
                 context['referenced_entities'] = referenced_entities(
-                    result.get('referenced_entities'), context.get('history', []))
+                    result.get('referenced_entities'), context.get('history', []),
+                    context.get('previous_referenced_entities', []))
                 context['superseded_constraints'] = result.get('superseded_constraints', [])
                 retained = followup_scope(context)
                 if retained:

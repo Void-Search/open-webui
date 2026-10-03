@@ -104,6 +104,26 @@ def test_lookup_names_cannot_come_from_user_only_context_or_embedded_fragments()
     ]) == ['Willow Hall']
 
 
+def test_remaining_lookup_uses_validated_names_missing_from_partial_answer(monkeypatch):
+    research = research_state('What about the other venue?')
+    context = {
+        'latest_user_message': research.question,
+        'previous_referenced_entities': ['Willow Hall', 'Oak Theatre'],
+        'history': [{'role': 'assistant', 'content': 'Willow Hall: 12 Oak Road. Other details unverified.'}],
+    }
+
+    async def model(_request, _model, _user, instruction, data, **_kwargs):
+        assert instruction == pipeline.RESOLVE
+        assert data['previous_referenced_entities'] == ['Willow Hall', 'Oak Theatre']
+        return {'continuation': True, 'resolved_intent': 'Find the address for Oak Theatre',
+                'referenced_entities': ['Oak Theatre', 'Invented Centre']}
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    asyncio.run(research.resolve_followup(context))
+    assert context['referenced_entities'] == ['Oak Theatre']
+    assert 'Oak Theatre' in research.question
+
+
 def test_matching_name_cannot_be_substituted_for_requested_detail(monkeypatch):
     research = research_state('What is the exact address for that venue?')
     research.metadata['ravenous_review_previous_answer'] = True

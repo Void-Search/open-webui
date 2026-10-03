@@ -334,6 +334,40 @@ def test_joint_followup_uses_literal_history_not_the_previous_retry_offer():
     assert reply in result['query']
 
 
+def test_joint_named_lookup_survives_saved_partial_reply_and_retry():
+    chats = ChatsFixture()
+    user = SimpleNamespace(id='alice')
+    names = ['Willow Hall', 'Oak Theatre']
+    reply = 'Retry web sources for the original question.'
+    meta = {**metadata(), 'ravenous_research_context': {
+        'query': 'Find the street addresses for Willow Hall and Oak Theatre',
+        'referenced_entities': names,
+    }}
+    result = {
+        'pipeline': 'joint', 'sufficient': False, 'clarification_question': QUESTION,
+        'report': {'sources': [{'kind': 'web', 'selected': True}]},
+        'recovery': {'kind': 'retry', 'question': QUESTION,
+                     'choices': [{'reply': reply, 'mode': 'web'}]},
+    }
+
+    async def exercise():
+        await conversation.remember_result(meta, user, result, chats=chats)
+        chats.messages['next'].update(done=True, content='Willow Hall: 12 Oak Road. Other details unverified.')
+        chats.messages['reply']['parentId'] = 'next'
+        body = {'model': 'fixture', 'metadata': metadata(),
+                'messages': [{'role': 'user', 'content': 'What about the other venue?'}]}
+        followup = await conversation.prepare_context(None, body, user, chats=chats, joint=True)
+        assert followup['previous_referenced_entities'] == names
+        assert 'Oak Theatre' not in followup['history'][-1]['content']
+        body['messages'][-1]['content'] = reply
+        retry = await conversation.prepare_context(None, body, user, chats=chats, joint=True)
+        assert retry['referenced_entities'] == names
+        assert retry['intent_resolved'] is True
+        assert retry['resolved_intent'] == meta['ravenous_research_context']['query']
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize('kind', ['local', 'saved', None])
 def test_private_assistant_evidence_never_enters_public_query_planning(kind):
     state = {'report': {'sources': [{'kind': 'web', 'selected': True}, {'kind': kind, 'selected': True}]}}
