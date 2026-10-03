@@ -740,12 +740,13 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
             assert data['previous_answer'] == (history[-1]['content'] if continuation else '')
         if instruction == pipeline.PLAN:
             assert data['question'] == intent and data['latest_user_message'] == reply
-            assert data['conversation'] == history[:1]
-            assert original in data['literal_user_context'] and reply in data['literal_user_context']
+            assert data['conversation'] == (history[:1] if continuation else [])
+            assert reply in data['literal_user_context']
+            assert (original in data['literal_user_context']) is continuation
             assert history[-1]['content'] not in json.dumps(data)
-            assert data['previous_resolved_question'] == original
+            assert data['previous_resolved_question'] == (original if continuation else '')
             assert data['continuation'] is continuation
-            assert data['conversation_subject'] == (original if continuation else 'Underlying conversation subject')
+            assert data['conversation_subject'] == (original if continuation else intent)
             assert 'retrieval did not verify' not in json.dumps(data)
             result['resolved_intent'] = 'A lossy rewrite that drops the new constraint'
             if 'existing_queries' not in data:
@@ -776,6 +777,32 @@ def test_followup_interpretation_precedes_queries_and_cannot_be_overwritten(
         history[-1]['content'] if continuation else ''
     )
     assert not result['metadata']['ravenous_research']['report']['failures']
+
+
+@pytest.mark.parametrize('continuation', [True, False])
+def test_source_limits_follow_the_resolved_topic_not_obsolete_history(setup, monkeypatch, continuation):
+    request, emit, events, _prompts = setup
+    original = 'Only use uploaded files to compare the archive interfaces.'
+    latest = 'Explain the interface limits.' if continuation else 'Now search the web for stellar evolution.'
+    original_model = pipeline.model_json
+
+    async def model(*args, **kwargs):
+        if args[3] == pipeline.RESOLVE:
+            return {'continuation': continuation, 'resolved_intent': latest}
+        return await original_model(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    monkeypatch.setattr(pipeline, 'prepare_context', conversation.prepare_context)
+    body = {'model': 'model', 'messages': [{'role': 'user', 'content': original},
+                                          {'role': 'user', 'content': latest}]}
+    result = asyncio.run(pipeline.run(request, body, {'__event_emitter__': emit}, SimpleNamespace(id='alice')))
+    assert result['metadata']['ravenous_source_limited'] is continuation
+    assert bool(events[-1]['data']['report']['queries']) is not continuation
+    literal = result['metadata']['ravenous_evidence_assessment']['user_context']
+    if continuation:
+        assert original in literal and latest in literal
+    else:
+        assert literal == latest
 
 
 def test_continued_question_keeps_subject_when_the_model_only_repeats_the_latest_turn():

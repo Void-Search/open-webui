@@ -782,17 +782,6 @@ class NativeResearch:
         self.question, self.domains = context['query'], context['source_domains']
         self.user_context = self.question
         self.mode = context.get('retrieval_mode', 'both')
-        self.selected_only = bool(
-            re.search(
-                r'\b(?:only (?:use|search) (?:the |my )?(?:selected|attached|uploaded)|'
-                r'(?:selected|attached|uploaded) (?:sources|documents|files) only)\b',
-                self.question,
-                re.I,
-            )
-        )
-        if self.selected_only:
-            self.mode = 'local'
-        self.metadata['ravenous_source_limited'] = self.selected_only
         await self.emit({'stage': 'planning', 'status': 'running'})
         await self.resolve_followup(context)
         self.metadata['ravenous_review_previous_answer'] = context.get('review_previous_answer') is True
@@ -804,6 +793,17 @@ class NativeResearch:
                  if item.get('role') == 'assistant' and isinstance(item.get('content'), str)), ''
             )[:3000]
         await self.plan_queries(context)
+        self.selected_only = bool(
+            re.search(
+                r'\b(?:only (?:use|search) (?:the |my )?(?:selected|attached|uploaded)|'
+                r'(?:selected|attached|uploaded) (?:sources|documents|files) only)\b',
+                self.user_context,
+                re.I,
+            )
+        )
+        if self.selected_only:
+            self.mode = 'local'
+        self.metadata['ravenous_source_limited'] = self.selected_only
         self.metadata['ravenous_research_context']['query'] = self.question
         for name in ('native', 'saved'):
             self.report['local'][name] = {'status': 'skipped', 'count': 0}
@@ -873,6 +873,11 @@ class NativeResearch:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def plan_queries(self, context):
+        reset = context.get('continuation') is False
+        if reset:
+            # An explicit topic reset must remove inherited constraints from
+            # model inputs too, not just stop appending them to outgoing queries.
+            self.user_context = context.get('latest_user_message', self.user_context)
         inherited = context.get('continuation') is True or (
             context.get('continuation') is None and context.get('review_previous_answer') is True
         )
@@ -894,14 +899,15 @@ class NativeResearch:
             'latest_user_message': context.get('latest_user_message', self.user_context),
             # References were resolved already. Repeating assistant claims here
             # can replace user scope with an earlier answer's unsupported limits.
-            'conversation': [item for item in context.get('history', []) if item.get('role') == 'user'],
+            'conversation': [] if reset else [item for item in context.get('history', []) if item.get('role') == 'user'],
             'literal_user_context': self.user_context,
-            'previous_user_request': followup_scope(context),
-            'previous_resolved_question': context.get('previous_query', ''),
+            'previous_user_request': '' if reset else followup_scope(context),
+            'previous_resolved_question': '' if reset else context.get('previous_query', ''),
             'continuation': context.get('continuation'),
-            'conversation_subject': context.get('conversation_subject', ''),
+            'conversation_subject': context.get('resolved_intent', self.question) if reset
+            else context.get('conversation_subject', ''),
             'referenced_entities': context.get('referenced_entities', []),
-            'clarification_question': context.get('clarification_question'),
+            'clarification_question': None if reset else context.get('clarification_question'),
             **self.calendar,
         }
         planning_question = context.get('resolved_intent', self.question)

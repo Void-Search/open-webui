@@ -238,15 +238,25 @@ def test_new_topic_queries_exclude_previous_scope(monkeypatch):
     context = {
         'continuation': False, 'intent_resolved': True, 'resolved_intent': latest,
         'latest_user_message': latest, 'previous_original_query': 'Compare Aster version 7 on Linux.',
+        'previous_query': 'Compare Aster version 7 on Linux.',
         'history': [{'role': 'user', 'content': 'Compare Aster version 7 on Linux.'}],
     }
+    research.user_context = 'Current request: ' + latest + '\nEarlier context: Compare Aster version 7 on Linux.'
+    prompts = []
 
-    async def model(*_args, **_kwargs):
+    async def model(_request, _model, _user, _instruction, data, **_kwargs):
+        prompts.append(data)
         return {'queries': ['stellar evolution stages', 'stellar evolution models']}
 
     monkeypatch.setattr(pipeline, 'model_json', model)
     asyncio.run(research.plan_queries(context))
     assert research.query_scope == ''
+    assert research.user_context == latest
+    assert prompts
+    for data in prompts:
+        assert data['conversation'] == []
+        assert data['previous_user_request'] == data['previous_resolved_question'] == ''
+        assert data['literal_user_context'] == latest
     assert all('Aster' not in query and 'Linux' not in query for query in research.queries)
 
 

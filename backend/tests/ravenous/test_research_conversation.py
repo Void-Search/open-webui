@@ -368,6 +368,33 @@ def test_joint_named_lookup_survives_saved_partial_reply_and_retry():
     asyncio.run(exercise())
 
 
+def test_joint_context_recovers_public_research_after_an_ordinary_turn():
+    chats = ChatsFixture()
+    state = chats.messages['answer']['meta']['ravenous_research']
+    state.update(pipeline='joint', referenced_entities=['Willow Hall', 'Oak Theatre'],
+                 report={'sources': [{'kind': 'web', 'selected': True}]})
+    chats.messages['answer'].update(parentId='first', content='Willow Hall and Oak Theatre offer talks.')
+    chats.messages['first'] = {'role': 'user', 'content': STATE['original_query'], 'parentId': None}
+    chats.messages['ordinary_user'] = {'role': 'user', 'content': 'Thank you.', 'parentId': 'answer'}
+    chats.messages['ordinary_answer'] = {
+        'role': 'assistant', 'content': 'Unclassified assistant content.',
+        'done': True, 'parentId': 'ordinary_user',
+    }
+    chats.messages['reply']['parentId'] = 'ordinary_answer'
+    body = {'model': 'fixture', 'metadata': metadata(),
+            'messages': [{'role': 'user', 'content': 'Find the addresses for those venues.'}]}
+    context = asyncio.run(conversation.prepare_context(
+        None, body, SimpleNamespace(id='alice'), chats=chats, joint=True))
+    assert context['previous_referenced_entities'] == ['Willow Hall', 'Oak Theatre']
+    assert context['history'] == [
+        {'role': 'user', 'content': STATE['original_query']},
+        {'role': 'assistant', 'content': 'Willow Hall and Oak Theatre offer talks.'},
+        {'role': 'user', 'content': 'Thank you.'},
+    ]
+    assert 'clarification_question' not in context and 'retrieval_mode' not in context
+    assert asyncio.run(conversation.pending_state(metadata(), SimpleNamespace(id='alice'), chats)) is None
+
+
 @pytest.mark.parametrize('kind', ['local', 'saved', None])
 def test_private_assistant_evidence_never_enters_public_query_planning(kind):
     state = {'report': {'sources': [{'kind': 'web', 'selected': True}, {'kind': kind, 'selected': True}]}}
@@ -378,6 +405,40 @@ def test_private_assistant_evidence_never_enters_public_query_planning(kind):
     assert conversation.public_answer_context(message, state) == ''
     state['report']['sources'] = []
     assert conversation.public_answer_context({'content': 'Unclassified source details'}, state) == ''
+
+
+@pytest.mark.parametrize('boundary', ['new_chat', 'other_branch', 'other_user', 'unfinished', 'private', 'tool',
+                                     'cycle', 'lookback_limit'])
+def test_earlier_public_context_stops_at_branch_and_privacy_boundaries(boundary):
+    chats = ChatsFixture()
+    chats.messages['answer'].update(parentId='first', content='Public named options.')
+    state = chats.messages['answer']['meta']['ravenous_research']
+    state['report'] = {'sources': [{'kind': 'web', 'selected': True}]}
+    chats.messages['first'] = {'role': 'user', 'content': 'Original public question', 'parentId': None}
+    if boundary == 'new_chat':
+        chats.messages['reply']['parentId'] = None
+    elif boundary == 'other_branch':
+        chats.messages['reply']['parentId'] = 'other'
+    elif boundary == 'other_user':
+        state['user_id'] = 'bob'
+    elif boundary == 'unfinished':
+        chats.messages['answer']['done'] = False
+    elif boundary == 'private':
+        state['report']['sources'][0]['kind'] = 'local'
+    elif boundary == 'tool':
+        chats.messages['answer']['output'] = [{'type': 'function_call', 'name': 'read_private_notes'}]
+    elif boundary == 'cycle':
+        chats.messages['answer'].pop('meta')
+        chats.messages['first']['parentId'] = 'answer'
+    elif boundary == 'lookback_limit':
+        previous = 'answer'
+        for index in range(18):
+            identity = 'ordinary-' + str(index)
+            chats.messages[identity] = {'role': 'user' if index % 2 == 0 else 'assistant',
+                                        'done': True, 'content': 'Ordinary reply', 'parentId': previous}
+            previous = identity
+        chats.messages['reply']['parentId'] = previous
+    assert asyncio.run(conversation.earlier_public_state(metadata(), SimpleNamespace(id='alice'), chats)) is None
 
 
 def test_public_answer_context_uses_visible_native_output_without_reasoning_or_notices():

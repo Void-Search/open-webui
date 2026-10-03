@@ -56,7 +56,9 @@ def joint_context(context, messages, reply, previous):
     if len(prior) > 8:
         prior = [*prior[:2], *prior[-6:]]
     previous = previous or {}
-    if previous.get('public_answer_context'):
+    if previous.get('public_history'):
+        prior = previous['public_history']
+    elif previous.get('public_answer_context'):
         prior.append({'role': 'assistant', 'content': previous['public_answer_context']})
     context.update(
         latest_user_message=reply[:3500],
@@ -108,6 +110,61 @@ async def pending_state(metadata, user, chats=None, *, require_question=True):
         # A cancelled or failed answer never delivered this question.
         return None
     return state
+
+
+async def earlier_public_state(metadata, user, chats=None):
+    """Recover public research context across ordinary turns on this branch.
+
+    Recovery choices still require the immediate parent. Unclassified assistant
+    content is excluded; private research and tool-derived replies stop lookup.
+    """
+    if not user or not metadata.get('chat_id') or not metadata.get('user_message_id'):
+        return None
+    if chats is None:
+        from open_webui.models.chats import Chats
+
+        chats = Chats
+    chat_id = metadata['chat_id']
+    chat = await chats.get_chat_by_id(chat_id)
+    if not chat or chat.user_id != user.id:
+        return None
+    message = await chats.get_message_by_id_and_message_id(chat_id, metadata['user_message_id'])
+    if not message or message.get('role') != 'user':
+        return None
+    identity, history, seen = message.get('parentId'), [], {metadata['user_message_id']}
+    # Eight earlier turns match the existing bounded user-history context.
+    for _ in range(16):
+        if not identity or identity in seen:
+            return None
+        seen.add(identity)
+        parent = await chats.get_message_by_id_and_message_id(chat_id, identity)
+        if not parent or parent.get('role') not in ('user', 'assistant'):
+            return None
+        if parent['role'] == 'user':
+            content = parent.get('content')
+            if isinstance(content, str):
+                history.append({'role': 'user', 'content': content[:800]})
+        else:
+            if not parent.get('done') or any(item.get('type') == 'function_call' for item in parent.get('output') or []):
+                return None
+            state = (parent.get('meta') or {}).get(STATE_KEY)
+            if isinstance(state, dict):
+                if state.get('user_id') != user.id:
+                    return None
+                answer = public_answer_context(parent, state)
+                if not answer:
+                    return None
+                history.append({'role': 'assistant', 'content': answer})
+                question_id = parent.get('parentId')
+                if not question_id or question_id in seen:
+                    return None
+                question = await chats.get_message_by_id_and_message_id(chat_id, question_id)
+                if not question or question.get('role') != 'user' or not isinstance(question.get('content'), str):
+                    return None
+                history.append({'role': 'user', 'content': question['content'][:800]})
+                return {**state, 'public_answer_context': answer, 'public_history': list(reversed(history))}
+        identity = parent.get('parentId')
+    return None
 
 
 async def resolve_reply(request, model, user, pending, reply):
@@ -195,6 +252,8 @@ async def prepare_context(request, form_data, user, *, chats=None, resolver=None
         'review_previous_answer': False,
     }
     previous = await pending_state(metadata, user, chats, require_question=False)
+    if joint and not previous:
+        previous = await earlier_public_state(metadata, user, chats)
     if previous:
         context['previous_query'] = previous.get('resolved_query', previous.get('original_query', ''))
         context['previous_outcome'] = (previous.get('report') or {}).get('summary', '')
