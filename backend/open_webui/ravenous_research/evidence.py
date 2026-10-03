@@ -11,6 +11,8 @@ from collections import defaultdict
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+from .source_text import article_body_record, clean_web_text
+
 
 def weekend_dates(today=None):
     """Calendar reference for this weekend, including Friday, in the app's UTC date."""
@@ -86,7 +88,9 @@ def quotation_records(item):
     records = item.get('original_records')
     if records is None:
         records = [record for _, _, record in source_records(item.get('original_excerpt', item['text']))]
-    return [record for record in records if len(record) <= 2000 and substantive_record(record)]
+    return [record for record in records if len(record) <= 2000 and substantive_record(record)
+            and (item.get('metadata', {}).get('research_kind') != 'web'
+                 or article_body_record(record, item.get('source_id', '')))]
 
 
 def anchored_excerpts(selected, limit=12, character_limit=12000):
@@ -138,6 +142,8 @@ def passages(sources):
         for text, meta in zip(documents, metadata):
             if not isinstance(text, str):
                 continue
+            if meta.get('research_kind') == 'web':
+                text = clean_web_text(text)
             identity = str(meta.get('source') or source['source']['id'])
             records = source_records(text[:24000], complete=len(text) <= 24000)
             # Short windows keep reranker inputs below its truncation length.

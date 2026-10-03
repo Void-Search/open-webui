@@ -27,6 +27,7 @@
 	import HtmlToken from './HTMLToken.svelte';
 	import Clipboard from '$lib/components/icons/Clipboard.svelte';
 	import ColonFenceBlock from './ColonFenceBlock.svelte';
+	import SourceExcerpt from './SourceExcerpt.svelte';
 
 	export let id: string;
 	export let chatId = '';
@@ -193,13 +194,7 @@
 		</svelte:element>
 	{:else if token.type === 'code'}
 		{#if token.lang === 'ravenous-excerpt' || (legacyResearchExcerpts && insideBlockquote && token.lang === 'text')}
-			<!-- Keep source text opaque to Markdown, citations, HTML and math. -->
-			<div
-				class="ravenous-source-excerpt whitespace-pre-wrap break-words font-sans not-italic"
-				dir="auto"
-			>
-				{token.text}
-			</div>
+			<SourceExcerpt text={token.text} />
 		{:else if token.raw.includes('```')}
 			<CodeBlock
 				id={`${id}-${tokenIdx}`}
