@@ -32,6 +32,76 @@ def calendar_context(today=None):
     }
 
 
+def source_records(text, *, complete=True):
+    """Keep exact enclosing sections, including their lists, tables and conditions.
+
+    Only peer/higher headings and explicit omission markers end a section. A
+    truncated final section is unavailable rather than missing its qualifiers.
+    """
+    records, start, offset = [], 0, 0
+    level, fence = 0, None
+
+    def append(end):
+        record = text[start:end].strip()
+        if record:
+            records.append((start, end, record))
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        marker = re.match(r'^[ \t]{0,3}(`{3,}|~{3,})(.*)$', line.rstrip('\r\n'))
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = None
+        elif marker:
+            fence = marker[1]
+        elif re.fullmatch(r'\[(?:…|\.\.\.)\]', stripped):
+            append(offset)
+            start = offset + len(line)
+            level, fence = 0, None
+        else:
+            heading = re.match(r'^[ \t]*(?:\[)?(#{1,6})[ \t]+', line)
+            if heading and (not level or len(heading[1]) <= level):
+                append(offset)
+                start, level = offset, len(heading[1])
+        offset += len(line)
+    if complete:
+        append(len(text))
+    return records
+
+
+def substantive_record(text):
+    """Labels and links alone do not establish a fact or its qualifications."""
+    text = re.sub(r'!?\[[^\]]*\]\([^)]*\)', '', text)
+    for line in text.splitlines():
+        if re.match(r'^[ \t]*#{1,6}[ \t]+', line):
+            continue
+        plain = line.strip(' \t*+-#|`~_:>')
+        if re.search(r'\w', plain) and not line.rstrip().endswith(('?', ':')):
+            return True
+    return False
+
+
+def anchored_excerpts(selected, limit=12, character_limit=12000):
+    """Quote complete source records containing selected anchors, never stitched sentences."""
+    excerpts, seen = [], set()
+    for item in selected:
+        anchors = [line.strip() for line in item['text'].splitlines() if line.strip()]
+        records = item.get('original_records')
+        if records is None:
+            records = [record for _, _, record in source_records(item.get('original_excerpt', item['text']))]
+        for record in records:
+            if len(record) > 2000 or not substantive_record(record) or not any(anchor in record for anchor in anchors):
+                continue
+            key = item['source_id'], record
+            if key in seen or len(excerpts) >= limit or len(record) > character_limit:
+                continue
+            seen.add(key)
+            character_limit -= len(record)
+            identifier = 'p' + hashlib.sha256((item['source_id'] + ':quote:' + record).encode()).hexdigest()[:20]
+            excerpts.append({**item, 'id': identifier, 'parent_passage_id': item['id'], 'text': record})
+    return excerpts
+
+
 def passage_windows(text):
     """Keep sentence/line boundaries where possible, with a little shared context."""
     text = text[:24000]
@@ -60,15 +130,21 @@ def passages(sources):
             if not isinstance(text, str):
                 continue
             identity = str(meta.get('source') or source['source']['id'])
+            records = source_records(text[:24000], complete=len(text) <= 24000)
             # Short windows keep reranker inputs below its truncation length.
             for start, window in passage_windows(text):
                 if len(window) < 12:
                     continue
                 digest = hashlib.sha256(' '.join(window.split()).encode()).hexdigest()
+                window_start = text.find(window, start)
                 item = {
                     'id': 'p' + hashlib.sha256((identity + ':' + str(start) + ':' + digest).encode()).hexdigest()[:20],
                     'source_id': identity,
                     'text': window,
+                    'original_records': [
+                        record for begin, end, record in records
+                        if begin < window_start + len(window) and end > window_start
+                    ],
                     'metadata': dict(meta),
                     'source': dict(source['source']),
                     'score': None,
@@ -324,7 +400,7 @@ def context_message(selected, question, assessment=None):
 
 
 def source_report(candidates, selected):
-    selected_ids = {item['id'] for item in selected}
+    selected_ids = {item.get('parent_passage_id', item['id']) for item in selected}
     numbers = {
         item['source_id']: index
         for index, item in enumerate({item['source_id']: item for item in selected}.values(), 1)

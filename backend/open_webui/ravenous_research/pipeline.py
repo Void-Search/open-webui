@@ -829,11 +829,11 @@ class NativeResearch:
         await self.recheck_sources()
         review = self.metadata['ravenous_review_previous_answer']
         if review:
-            # Quoted excerpts must preserve omitted qualifiers and their original
-            # neighbors; the verifier's stitched sentences are only selection hints.
-            self.selected = [
-                {**item, 'text': item.get('original_excerpt', item['text'])} for item in self.selected
-            ]
+            # Verifier sentences are selection anchors. Quote intact original
+            # records so unrelated navigation and distant omitted text stay out.
+            self.selected = evidence.anchored_excerpts(self.selected)
+            if not self.selected:
+                self.assessment['sufficient'] = False
         self.assessment['user_context'] = self.user_context
         self.assessment['previous_answer'] = self.previous_answer
         self.assessment.update(self.calendar)

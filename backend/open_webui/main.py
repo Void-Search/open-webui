@@ -1664,8 +1664,12 @@ async def chat_completion(
             if metadata.get('ravenous_retrieval_complete') and metadata.get('ravenous_review_previous_answer'):
                 from open_webui.ravenous_research.responses import excerpt_response
 
-                # Coverage checks use final authorized source wording. Keep the
+                # Researched follow-ups use final authorized source wording. Keep the
                 # normal response processor for citations, persistence and done.
+                # Suggested questions also synthesize claims from context. Do
+                # not reintroduce guessed associations after a quoted answer.
+                if tasks:
+                    tasks = {**tasks, TASKS.FOLLOW_UP_GENERATION: False}
                 response = excerpt_response(
                     metadata.get('ravenous_selected_passages', []),
                     form_data['model'],
@@ -1685,7 +1689,7 @@ async def chat_completion(
             if ctx is None:
                 ctx = await build_chat_response_context(request, form_data, user, model, metadata, tasks, events)
             else:
-                ctx.update(form_data=form_data, metadata=metadata, events=events)
+                ctx.update(form_data=form_data, metadata=metadata, events=events, tasks=tasks)
 
             return await process_chat_response(response, ctx)
         except asyncio.CancelledError:

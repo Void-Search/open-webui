@@ -30,6 +30,7 @@ def process_native_chat():
         }
         calls = []
         provider_result = {'provider_response': True}
+        tasks = {'follow_up_generation': True, 'title_generation': True}
 
         async def payload(_request, body, _user, _metadata, _model):
             calls.append('payload')
@@ -45,7 +46,7 @@ def process_native_chat():
 
         async def response_context(request, body, user, model, metadata, tasks, context_events):
             calls.append('context')
-            return {'form_data': body, 'metadata': metadata, 'events': context_events}
+            return {'form_data': body, 'metadata': metadata, 'events': context_events, 'tasks': tasks}
 
         async def standard_processor(response, context):
             calls.append('response')
@@ -53,6 +54,8 @@ def process_native_chat():
             assert context['metadata']['sources'] == sources
             assert context['events'] == events
             assert context['form_data']['stream'] is stream
+            assert context['tasks']['follow_up_generation'] is not (review and complete)
+            assert context['tasks']['title_generation'] is True
             if review and complete:
                 if stream:
                     assert isinstance(response, StreamingResponse)
@@ -74,6 +77,7 @@ def process_native_chat():
         namespace = {
             'asyncio': asyncio, 'HTTPException': HTTPException, 'status': status,
             'JSONResponse': JSONResponse, 'log': logging.getLogger(__name__),
+            'TASKS': SimpleNamespace(FOLLOW_UP_GENERATION='follow_up_generation'),
             'process_chat_payload': payload, 'drain_approved_tool_calls': approved,
             'chat_completion_handler': provider, 'build_chat_response_context': response_context,
             'process_chat_response': standard_processor,
@@ -88,8 +92,9 @@ def process_native_chat():
         }
         initial = {'assistant_message_id': 'continuing'} if continuing else {}
         result = await namespace['process_chat'](SimpleNamespace(state=SimpleNamespace()), body, None,
-                                                 initial, {'id': 'fixture'})
+                                                 initial, {'id': 'fixture'}, tasks)
         assert result == {'standard_processor_completed': True}
+        assert tasks == {'follow_up_generation': True, 'title_generation': True}
         assert calls.count('response') == 1
         assert ('provider' in calls) is not (review and complete)
         assert calls.index('payload') < calls.index('approved') < calls.index('response')

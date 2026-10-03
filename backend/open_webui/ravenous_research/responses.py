@@ -1,8 +1,8 @@
 """Completed research replies and clarification delivery for JSON and SSE clients."""
 
 import codecs
-import html
 import json
+import re
 import time
 import uuid
 
@@ -16,16 +16,19 @@ def excerpt_text(selected):
     identifiers, excerpts = {}, []
     # Selection is already bounded by verification and the final context budget.
     # Keep complete passages so a limit here cannot detach a qualifying line.
-    punctuation = str.maketrans({char: f'&#{ord(char)};' for char in '\\`*_{}[]()#+-.!|~'})
+    links = re.compile(r'!?\[([^\]\n]*)\]\((?:\\.|[^\\()\n]|\([^()\n]*\))*\)')
     for item in selected:
         number = identifiers.setdefault(item['source_id'], len(identifiers) + 1)
         text = item.get('text')
         if not isinstance(text, str) or not text.strip():
             continue
-        # Entities preserve visible wording while disabling Markdown links,
-        # images, headings and source-authored citation markers.
-        escaped = html.escape(text, quote=False).translate(punctuation)
-        quote = '\n'.join('> ' + line if line else '>' for line in escaped.splitlines())
+        # A literal fence protects source punctuation from WebUI's math and
+        # citation extensions, including indented source lines. Source backticks
+        # cannot close a fence longer than any run present in the passage.
+        plain = links.sub(lambda match: match[1], text)
+        fence = '`' * max(3, max((len(run) for run in re.findall(r'`+', plain)), default=0) + 1)
+        literal = f'{fence}text\n{plain}\n{fence}'
+        quote = '\n'.join('> ' + line if line else '>' for line in literal.splitlines())
         excerpts.append(quote + f'\n\n[{number}]')
     if not excerpts:
         return 'I could not verify enough source detail to answer this request.'
