@@ -81,8 +81,14 @@ def test_named_options_survive_lossy_resolution_and_search_planning(monkeypatch)
     assert context['referenced_entities'] == ['Willow Hall', 'Oak Theatre']
     assert all(name in research.question for name in context['referenced_entities'])
     assert all(any(name in query for query in research.queries) for name in context['referenced_entities'])
-    assert all(previous in query and latest in query for query in research.queries)
+    assert all(all(term in query for term in ('Oxford', 'week', 'contact', 'addresses')) for query in research.queries)
+    assert previous in research.question and latest in research.question
     assert 'Invented Centre' not in str(research.queries)
+
+
+def test_lookup_scope_retains_critical_constraints_and_source_limits():
+    assert pipeline.lookup_scope('Please show me version 7, not 8, on Linux this week; only example.test.') == (
+        'version 7, not 8, Linux this week; only example.test')
 
 
 def test_lookup_names_cannot_come_from_user_only_context_or_embedded_fragments():
@@ -91,6 +97,34 @@ def test_lookup_names_cannot_come_from_user_only_context_or_embedded_fragments()
     assert pipeline.referenced_entities(values, [
         {'role': 'assistant', 'content': 'Willow Hall has elaborate exhibitions. []'},
     ]) == ['Willow Hall']
+
+
+def test_matching_name_cannot_be_substituted_for_requested_detail(monkeypatch):
+    research = research_state('What is the exact address for that venue?')
+    research.metadata['ravenous_review_previous_answer'] = True
+    research.metadata['ravenous_research_context'] = {'referenced_entities': ['Willow Hall, Oxford']}
+    item = {'id': 'card', 'source_id': 'card', 'text': '## Willow Hall\nWillow Hall, Oxford',
+            'source': {'name': 'Events in Oxford'}, 'metadata': {'research_kind': 'web'}}
+
+    async def model(_request, _model, _user, instruction, data, **kwargs):
+        assert instruction == pipeline.VERIFY_DETAILS
+        assert kwargs['response_format']['json_schema']['schema']['properties']['evidence']
+        return {'requested_detail': 'exact address', 'evidence': [{'id': 'e1', 'value': 'Willow Hall, Oxford'}],
+                'sufficient': True, 'supported_ids': ['e1'], 'missing': [], 'conflicts': []}
+
+    monkeypatch.setattr(pipeline, 'model_json', model)
+    result = asyncio.run(research.assess([item]))
+    assert result['supported_ids'] == [] and result['sufficient'] is False and result['missing']
+
+
+def test_requested_values_need_literal_support_in_the_selected_passage():
+    refs = {'e1': ({}, 'Meet at Willow Hall\n17 Orchard Road, Oxford.'),
+            'e2': ({}, 'Oak Theatre is open today.')}
+    result = {'evidence': [{'id': 'e1', 'value': '17 orchard road, Oxford.'},
+                           {'id': 'e2', 'value': '17 Orchard Road, Oxford.'},
+                           {'id': 'e1', 'value': '17 Orchard Lane, Oxford.'},
+                           {'id': 'e2', 'value': 'at Willow Hall'}]}
+    assert pipeline.detail_ids(result, refs, ['Willow Hall', 'Oak Theatre']) == {'e1'}
 
 
 @pytest.mark.parametrize('previous,latest,before,after', [
