@@ -5,8 +5,6 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-from fastapi import HTTPException
 from open_webui.ravenous_research.quality import (
     execution_requested,
     execution_response,
@@ -70,7 +68,10 @@ def test_native_search_delegates_to_joint_retrieval(monkeypatch):
 
 
 def test_execution_is_required_only_when_an_authorized_tool_is_available():
-    from open_webui.ravenous_research.quality import EXECUTION_GUIDANCE, execution_requested
+    from open_webui.ravenous_research.quality import (
+        EXECUTION_GUIDANCE,
+        execution_requested,
+    )
 
     tree = ast.parse((Path(__file__).parents[2] / 'open_webui/utils/middleware.py').read_text())
     branch = next(
@@ -105,44 +106,6 @@ def test_execution_is_required_only_when_an_authorized_tool_is_available():
     )
 
 
-@pytest.mark.parametrize('stream', [False, True])
-def test_unavailable_research_completes_turn_without_inference(stream):
-    from open_webui.ravenous_research.quality import ResearchUnavailable
-
-    tree = ast.parse((Path(__file__).parents[2] / 'open_webui/main.py').read_text())
-    function = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == 'process_chat')
-    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-
-    async def payload(*args):
-        raise ResearchUnavailable()
-
-    async def context(*args):
-        assert args[-2] is None  # no unnecessary follow-up model tasks
-        return {'fixture': True}
-
-    async def response(value, ctx):
-        assert ctx == {'fixture': True}
-        return value
-
-    namespace = dict(
-        process_chat_payload=payload,
-        ResearchUnavailable=ResearchUnavailable,
-        build_chat_response_context=context,
-        process_chat_response=response,
-        asyncio=asyncio,
-    )
-    exec(compile(module, '<controlled-research-outcome>', 'exec'), namespace)
-
-    async def exercise():
-        result = await namespace['process_chat'](None, {'model': 'fixture', 'stream': stream}, None, {}, None)
-        if stream:
-            body = ''.join([chunk async for chunk in result.body_iterator])
-            assert body.endswith('data: [DONE]\n\n') and 'try again' in body
-        else:
-            assert result['choices'][0]['finish_reason'] == 'stop'
-            assert 'try again' in result['choices'][0]['message']['content']
-
-    asyncio.run(exercise())
 
 
 def test_modified_json_response_recalculates_content_length():

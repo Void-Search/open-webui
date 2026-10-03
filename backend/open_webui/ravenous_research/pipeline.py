@@ -401,7 +401,9 @@ class NativeResearch:
                     {'stage': name, 'code': assessment.get('reason', 'collection_retrieval_failed')}
                 )
         if self.mode == 'both':
-            from open_webui.retrieval.ravenous_union_rerank import load_clarification_threshold
+            from open_webui.retrieval.ravenous_union_rerank import (
+                load_clarification_threshold,
+            )
 
             candidates = evidence.bound_candidates(evidence.passages(sources), per_kind=30)
             ranked, unavailable = await evidence.rank(
@@ -417,7 +419,9 @@ class NativeResearch:
         await self.emit({'stage': 'local', 'store': name, **self.report['local'][name]})
 
     async def evaluate(self):
-        from open_webui.retrieval.ravenous_union_rerank import load_clarification_threshold
+        from open_webui.retrieval.ravenous_union_rerank import (
+            load_clarification_threshold,
+        )
 
         self.candidates = evidence.bound_candidates(evidence.passages(self.sources))
         evidence.restrict_sources(self.candidates, self.domains)

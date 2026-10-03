@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
-from ravenous_common.auth import knowledge_auth_client
+from ravenous_foundations.identity import knowledge_auth_client
 
 
 def identity(user):

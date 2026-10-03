@@ -2,16 +2,6 @@
 
 import re
 
-from fastapi import HTTPException
-
-
-class ResearchUnavailable(HTTPException):
-    """A controlled search outcome rendered as a completed assistant message."""
-
-    def __init__(self, result=None):
-        result = result or unavailable_result()
-        super().__init__(503, recovery_message(result))
-
 
 def unavailable_result():
     return {

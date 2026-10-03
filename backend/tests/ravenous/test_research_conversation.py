@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from open_webui.ravenous_research import conversation, responses, web_tools
 from open_webui.ravenous_research.quality import recovery_message
+from starlette.responses import StreamingResponse
 
 QUESTION = 'Are international chains required, or is any English-speaking hotel suitable?'
 STATE = {
@@ -18,6 +19,35 @@ STATE = {
     'source_domains': ['example.org'],
     'attempted_queries': ['Bremen hotels'],
 }
+
+
+def complete_response(text, model, stream=False):
+    result = {
+        'model': model,
+        'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
+    }
+    if not stream:
+        return result
+
+    async def events():
+        yield (
+            'data: '
+            + json.dumps(
+                {
+                    'model': model,
+                    'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': text}, 'finish_reason': None}],
+                }
+            )
+            + '\n\n'
+        )
+        yield (
+            'data: '
+            + json.dumps({'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})
+            + '\n\n'
+        )
+        yield 'data: [DONE]\n\n'
+
+    return StreamingResponse(events(), media_type='text/event-stream')
 
 
 class ChatsFixture:
@@ -184,12 +214,12 @@ def test_question_appears_once_in_json_and_split_sse(existing):
     question = 'Which café should I check?'
     meta = {'ravenous_research': {'question': question}}
     answer = 'Supported finding.' + ('\n\n' + question if existing else '')
-    data = responses.complete_response(answer, 'fixture')
+    data = complete_response(answer, 'fixture')
     json_text = responses.finish_json(data, meta)['choices'][0]['message']['content']
     assert json_text.count(question) == 1
 
     async def exercise():
-        source = responses.complete_response(answer, 'fixture', stream=True)
+        source = complete_response(answer, 'fixture', stream=True)
         raw = ''.join([piece async for piece in source.body_iterator]).encode()
 
         async def split():
@@ -245,7 +275,7 @@ def test_joint_details_and_question_stay_out_of_answer():
             'response_notice': notice,
         }
     }
-    response = responses.complete_response('Supported partial answer [1].', 'fixture')
+    response = complete_response('Supported partial answer [1].', 'fixture')
     result = responses.finish_json(response, meta)
     result = responses.finish_json(result, meta)
     text = result['choices'][0]['message']['content']
@@ -256,7 +286,7 @@ def test_joint_details_and_question_stay_out_of_answer():
     assert conversation.finish_output(output, meta) == output
 
     async def stream():
-        original = responses.complete_response(text, 'fixture', stream=True)
+        original = complete_response(text, 'fixture', stream=True)
         return ''.join([frame async for frame in responses.question_stream(original.body_iterator, meta)])
 
     frames = asyncio.run(stream())

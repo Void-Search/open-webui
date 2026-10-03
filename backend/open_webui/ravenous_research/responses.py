@@ -3,38 +3,7 @@
 import codecs
 import json
 
-from starlette.responses import StreamingResponse
-
 from .conversation import append_question, finish_output
-
-
-def complete_response(text, model, stream=False):
-    result = {
-        'model': model,
-        'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
-    }
-    if not stream:
-        return result
-
-    async def events():
-        yield (
-            'data: '
-            + json.dumps(
-                {
-                    'model': model,
-                    'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': text}, 'finish_reason': None}],
-                }
-            )
-            + '\n\n'
-        )
-        yield (
-            'data: '
-            + json.dumps({'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})
-            + '\n\n'
-        )
-        yield 'data: [DONE]\n\n'
-
-    return StreamingResponse(events(), media_type='text/event-stream')
 
 
 def finish_json(data, metadata):

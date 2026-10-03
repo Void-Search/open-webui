@@ -9,7 +9,11 @@ from typing import Any
 
 import httpx
 from ravenous_common import context as common_context
-from ravenous_common.context import ContextBudgetError, ContextBudgetResult, is_local_provider
+from ravenous_common.context import (
+    ContextBudgetError,
+    ContextBudgetResult,
+    is_local_provider,
+)
 from ravenous_common.settings import load_settings
 
 __all__ = [

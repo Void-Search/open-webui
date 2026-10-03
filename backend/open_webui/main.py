@@ -1651,8 +1651,6 @@ async def chat_completion(
             detail=str(e),
         )
 
-    from open_webui.ravenous_research.quality import ResearchUnavailable
-
     async def process_chat(request, form_data, user, metadata, model, tasks=None):
         try:
             ctx = None
@@ -1678,13 +1676,6 @@ async def chat_completion(
             else:
                 ctx.update(form_data=form_data, metadata=metadata, events=events)
 
-            return await process_chat_response(response, ctx)
-        except ResearchUnavailable as exc:
-            # Complete the turn normally: a provider acquisition failure must not
-            # leave the composer blocked on an empty error response. No LLM call.
-            from open_webui.ravenous_research.responses import complete_response
-            response = complete_response(exc.detail, form_data.get('model'), form_data.get('stream', False))
-            ctx = await build_chat_response_context(request, form_data, user, model, metadata, None, [])
             return await process_chat_response(response, ctx)
         except asyncio.CancelledError:
             log.info('Chat processing was cancelled')

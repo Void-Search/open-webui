@@ -5,7 +5,7 @@ import os
 
 import httpx
 from fastapi import HTTPException
-from ravenous_common.auth import knowledge_auth_client
+from ravenous_foundations.identity import knowledge_auth_client
 
 from .quality import initial_query as choose_query
 from .quality import recovery_notice, requested_domains

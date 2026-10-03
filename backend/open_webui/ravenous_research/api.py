@@ -6,7 +6,7 @@ import re
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from ravenous_common.auth import knowledge_auth_client
+from ravenous_foundations.identity import knowledge_auth_client
 
 from open_webui.utils.auth import get_verified_user
 
