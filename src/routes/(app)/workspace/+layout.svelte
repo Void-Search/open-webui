@@ -27,6 +27,7 @@
 
 	let loaded = false;
 	let researchEnabled = false;
+	let researchFrontendUrl = '';
 	let lastPath = '';
 	let activeWorkspaceSection = '';
 	let visibleActions = [];
@@ -79,12 +80,15 @@
 	};
 
 	onMount(async () => {
-		researchEnabled = await fetch('/api/v1/ravenous/research/config', {
+		await fetch('/api/v1/ravenous/research/config', {
 			headers: { Authorization: `Bearer ${localStorage.token}` }
 		})
 			.then((response) => (response.ok ? response.json() : {}))
-			.then((value: { enabled?: boolean }) => value.enabled === true)
-			.catch(() => false);
+			.then((value: { enabled?: boolean; frontend_url?: string }) => {
+				researchEnabled = value.enabled === true;
+				researchFrontendUrl = value.frontend_url ?? '';
+			})
+			.catch(() => {});
 
 		if ($user?.role !== 'admin') {
 			if ($page.url.pathname.includes('/models') && !$user?.permissions?.workspace?.models) {
@@ -173,7 +177,9 @@
 							</a>
 						{/if}
 
-						{#if researchEnabled}
+						{#if researchFrontendUrl}
+							<a class="min-w-fit px-1 text-sm" href={researchFrontendUrl} target="_blank" rel="noopener noreferrer">Research ↗</a>
+						{:else if researchEnabled}
 							<a class="min-w-fit px-1 text-sm" href="/workspace/research">Research</a>
 						{/if}
 						{#if $user?.role === 'admin' || $user?.permissions?.workspace?.knowledge}

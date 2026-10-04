@@ -2,6 +2,7 @@
 
 import os
 import re
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,7 +26,15 @@ def enabled():
 
 @router.get('/config')
 async def configuration(_user=Depends(get_verified_user)):
-    return {'enabled': enabled()}
+    value = os.environ.get('RAVENOUS_RESEARCH_FRONTEND_URL', '')
+    try:
+        url = urlsplit(value)
+        valid = (url.scheme in {'http', 'https'} and url.hostname and url.username is None
+                 and url.password is None and not url.query and not url.fragment
+                 and not any(c.isspace() for c in value) and url.port != 0)
+    except ValueError:
+        valid = False
+    return {'enabled': enabled(), 'frontend_url': value if valid else ''}
 
 
 async def forward(request, user, endpoint, path):
