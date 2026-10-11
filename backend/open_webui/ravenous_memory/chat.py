@@ -84,14 +84,16 @@ async def own_chat(user, metadata):
     return True
 
 
-async def prepare(request, user, form_data, metadata, target, *, model=None, originals=None):
+async def prepare(request, user, form_data, metadata, target, *, model=None, originals=None, requested_memory=None):
     from open_webui.models.chats import Chats
 
     if not await own_chat(user, metadata):
         return form_data['messages']
     originals = snapshot(copy.deepcopy(originals if originals is not None else form_data['messages']))
     capabilities = ((model or {}).get('info', {}).get('meta', {}).get('capabilities') or {})
-    metadata['ravenous_memory_enabled'] = capabilities.get('memory', True) and await allowed_memory(user, (form_data.get('features') or {}).get('memory'))
+    if requested_memory is None:
+        requested_memory = (form_data.get('features') or {}).get('memory')
+    metadata['ravenous_memory_enabled'] = capabilities.get('memory', True) and await allowed_memory(user, requested_memory)
     chat_id = metadata['chat_id']
     mapping = await Chats.get_messages_map_by_chat_id(chat_id)
     metadata['ravenous_memory_branch'] = branch(originals, mapping or {})

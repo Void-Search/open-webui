@@ -3527,7 +3527,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if ravenous_memory_target:
         form_data['messages'] = await prepare_memory(request, user, form_data, metadata, ravenous_memory_target,
-                                                    model=model, originals=memory_originals)
+                                                    model=model, originals=memory_originals,
+                                                    requested_memory=features.get('memory', False))
         from open_webui.ravenous_memory.chat import remember_base_prompt
 
         remember_base_prompt(metadata)
