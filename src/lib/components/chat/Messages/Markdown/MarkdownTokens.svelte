@@ -6,7 +6,7 @@
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { marked, type Token } from 'marked';
+	import { type Token } from 'marked';
 	import { copyToClipboard, unescapeHtml } from '$lib/utils';
 	import { resolveChatMessageToolCall } from '$lib/apis/chats';
 
@@ -195,7 +195,7 @@
 	{:else if token.type === 'code'}
 		{#if token.lang === 'ravenous-excerpt' || (legacyResearchExcerpts && insideBlockquote && token.lang === 'text')}
 			<SourceExcerpt text={token.text} />
-		{:else if token.raw.includes('```')}
+		{:else if token.codeBlockStyle !== 'indented'}
 			<CodeBlock
 				id={`${id}-${tokenIdx}`}
 				collapsed={$settings?.collapseCodeBlocks ?? false}
@@ -477,7 +477,7 @@
 									id={`${id}-${tokenIdx}-${detailIdx}-d`}
 									{chatId}
 									{messageId}
-									tokens={marked.lexer(decode(detailToken.text))}
+									tokens={detailToken.tokens ?? []}
 									attributes={detailToken?.attributes}
 									{done}
 									{allowEmbeds}
@@ -538,7 +538,7 @@
 						id={`${id}-${tokenIdx}-d`}
 						{chatId}
 						{messageId}
-						tokens={marked.lexer(decode(token.text))}
+						tokens={token.tokens ?? []}
 						attributes={token?.attributes}
 						{done}
 						{allowEmbeds}

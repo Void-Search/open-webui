@@ -15,6 +15,17 @@ from .client import client, configured
 log = logging.getLogger(__name__)
 
 
+def remember_base_prompt(metadata):
+    """Restore recalled context without adding research to the source-free prompt."""
+    context = metadata.get('ravenous_context') or {}
+    recalled = apply_context([], context)
+    if recalled:
+        base = metadata.get('base_system_prompt') or ''
+        metadata['base_system_prompt'] = '\n\n'.join(
+            part for part in (base, recalled[0]['content']) if part
+        )
+
+
 def branch(messages, mapping):
     forks = []
     siblings = Counter(item.get('parentId') for item in mapping.values())

@@ -149,6 +149,7 @@ async def finalize(request, body, user, emit):
                 previous_answer=assessment.get('previous_answer', ''),
             )
             body['messages'] = merge_system_messages(strip_empty_content_blocks([*messages, fallback]))
+            metadata['ravenous_evidence_message'] = fallback['content']
         recovery = state.get('recovery') or {
             'question': 'How would you like to continue?',
             'choices': [
