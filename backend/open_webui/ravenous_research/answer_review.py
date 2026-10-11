@@ -14,6 +14,20 @@ from . import context, evidence, local, pipeline, responses
 log = logging.getLogger(__name__)
 
 REVIEW = (
+    'For EACH factual claim, output a claim_checks entry BEFORE deciding support. '
+    'Copy draft_claim exactly from the unit and source_quote exactly from a cited source. '
+    'Choose a quote retaining governing conditions, negation and context needed to resolve its subject. '
+    'First extract source_relationship: identify its grammatical subject, action, target, outcome '
+    'and qualifications using ONLY the source quote. Then extract draft_relationship using ONLY '
+    'the draft claim. Compare these two relationships, not their vocabulary or named entities. '
+    'Consider ALL relationships in the source quote, not just its first clause. Equivalent wording '
+    'or clause order is consistent when the participants, actions, outcomes and qualifications agree. '
+    'Set consistent=false if the draft changes who performed the action, its outcome, negation, '
+    'conditions, cause or event order. Different actions by the same subject are different claims. '
+    'Absent evidence needs source_quote=null, source_relationship=null and consistent=false. '
+    'Use consistent=true only when the cited quote establishes the complete draft relationship. '
+    'Cover all text in factual units, including any introductory wording. '
+    'If ANY claim check is inconsistent, supported MUST be false. '
     'Check a drafted answer against the supplied source passages. Return ONLY JSON with '
     'units (one entry per draft unit, in order) followed by supported (boolean). For each unit '
     'copy its id, collect exact source quotes in evidence, and list any unsupported_details. '
@@ -22,8 +36,13 @@ REVIEW = (
     'An introductory label or heading without factual claims can have evidence=[]. '
     'Check EVERY factual claim, including each named entity, date, place, '
     'version, cause, activity and condition. A claim must be directly supported by its cited '
-    'source, with the same scope and qualifications. Related words, plausible inferences, '
-    'general knowledge and the user question are not evidence. An earlier assistant answer '
+    'source, with the same scope and qualifications. Matching names alone cannot establish '
+    'the relationship. Compare the subject, action, outcome, conditions, negation, event order '
+    'and cause/effect against the cited text. A possibility or intention is not a completed event. '
+    'Reject changed outcomes, reversed relationships or event order, '
+    'even when every name appears in a literal supporting quote. '
+    'Related words, plausible inferences, general knowledge and the user question are not evidence. '
+    'An earlier assistant answer '
     'is not evidence. A title or date for a broad event does not establish the details or '
     'dates of every activity within it. Check the passage text, not title associations. '
     'Use supported=false if ANY claim adds an absent detail, borrows from another subject, '
@@ -38,9 +57,19 @@ FORMAT = {'type': 'json_schema', 'json_schema': {
         'units': {'type': 'array', 'maxItems': 32, 'items': {
             'type': 'object', 'properties': {
                 'id': {'type': 'string'},
+                'claim_checks': {'type': 'array', 'maxItems': 16, 'items': {
+                    'type': 'object', 'properties': {
+                        'draft_claim': {'type': 'string', 'maxLength': 2000},
+                        'source_quote': {'type': ['string', 'null'], 'maxLength': 2000},
+                        'source_relationship': {'type': ['string', 'null'], 'maxLength': 1000},
+                        'draft_relationship': {'type': 'string', 'maxLength': 1000},
+                        'consistent': {'type': 'boolean'},
+                    }, 'required': ['draft_claim', 'source_quote', 'source_relationship',
+                                    'draft_relationship', 'consistent'], 'additionalProperties': False,
+                }},
                 'evidence': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string', 'maxLength': 2000}},
                 'unsupported_details': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string'}},
-            }, 'required': ['id', 'evidence', 'unsupported_details'], 'additionalProperties': False,
+            }, 'required': ['id', 'claim_checks', 'evidence', 'unsupported_details'], 'additionalProperties': False,
         }},
         'supported': {'type': 'boolean'},
     }, 'required': ['units', 'supported'], 'additionalProperties': False},
@@ -95,12 +124,12 @@ def review_input(text, selected, question):
     identifiers = {}
     for item in selected:
         identifiers.setdefault(item['source_id'], len(identifiers) + 1)
-    return {'question': question, 'draft_units': [
-        {'id': f'u{index}', 'text': unit.strip()}
-        for index, unit in enumerate(re.split(r'\n\s*\n', text), 1) if unit.strip()
-    ], 'sources': [
+    return {'sources': [
         {'citation': f'[{identifiers[item["source_id"]]}]', 'text': item['text']}
         for item in selected
+    ], 'question': question, 'draft_units': [
+        {'id': f'u{index}', 'text': unit.strip()}
+        for index, unit in enumerate(re.split(r'\n\s*\n', text), 1) if unit.strip()
     ]}
 
 
@@ -120,6 +149,25 @@ def supported_review(decision, data):
         quotes = review.get('evidence')
         citations = {f'[{number}]' for number in re.findall(r'\[(\d+)\]', unit['text'])}
         sources = [source['text'] for source in data['sources'] if source['citation'] in citations]
+        checks = review.get('claim_checks')
+        if not isinstance(checks, list) or len(checks) > 16 or (citations and not checks):
+            return False
+        uncovered = unit['text']
+        for check in checks:
+            if (not isinstance(check, dict) or check.get('consistent') is not True
+                    or any(not isinstance(check.get(key), str) or not check[key].strip()
+                           for key in ('draft_claim', 'source_quote', 'source_relationship', 'draft_relationship'))):
+                return False
+            claim, quote = normalize(check['draft_claim']), normalize(check['source_quote'])
+            if (claim not in normalize(unit['text']) or len(quote) < 15
+                    or not any(quote in normalize(source) for source in sources)):
+                return False
+            pattern = r'\s+'.join(re.escape(part) for part in check['draft_claim'].split())
+            uncovered = re.sub(pattern, '', uncovered)
+        if citations:
+            uncovered = re.sub(r'^\s*(?:>\s*)*\d+[.)]\s+|\[\d+\]', '', uncovered, flags=re.M)
+            if re.search(r'\w', uncovered):
+                return False
         if not isinstance(quotes, list) or (citations and not quotes):
             return False
         if any(not isinstance(quote, str) or len(quote.strip()) < 15
