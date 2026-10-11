@@ -119,6 +119,14 @@
 			usage?: unknown;
 		};
 		annotation?: { type: string; rating: number };
+		meta?: {
+			ravenous_context?: {
+				summary: string;
+				memories: { id: string; content: string }[];
+				notices: string[];
+			};
+			[key: string]: unknown;
+		};
 	}
 
 	export let chatId = '';
@@ -704,7 +712,9 @@
 								done={message.done}
 								active={isLastMessage}
 								{readOnly}
-								submit={async (reply) => { await submitMessage(message.id, reply, { research: true }); }}
+								submit={async (reply) => {
+									await submitMessage(message.id, reply, { research: true });
+								}}
 							/>
 						{:else if model?.info?.meta?.capabilities?.status_updates ?? true}
 							<StatusHistory statusHistory={message?.statusHistory} />
@@ -843,6 +853,29 @@
 							class="w-full flex flex-col relative {edit ? 'hidden' : ''}"
 							id="response-content-container"
 						>
+							{#if message.meta?.ravenous_context && (message.meta.ravenous_context.summary || message.meta.ravenous_context.memories?.length || message.meta.ravenous_context.notices?.length)}
+								<details
+									class="mb-2 text-xs text-gray-500 dark:text-gray-400"
+									data-testid="context-used"
+								>
+									<summary class="cursor-pointer">Context used</summary>
+									<div
+										class="mt-2 space-y-2 rounded-lg border border-gray-200 p-3 dark:border-gray-700"
+									>
+										{#if message.meta.ravenous_context.summary}<p class="whitespace-pre-wrap">
+												{message.meta.ravenous_context.summary}
+											</p>{/if}
+										{#each message.meta.ravenous_context.memories ?? [] as memory}<p
+												class="whitespace-pre-wrap"
+											>
+												{memory.content}
+											</p>{/each}
+										{#if message.meta.ravenous_context.notices?.includes('context_unavailable')}<p>
+												Saved context was unavailable for this reply.
+											</p>{/if}
+									</div>
+								</details>
+							{/if}
 							{#if hasResponseContent && message.error !== true}
 								<!-- always show message contents even if there's an error -->
 								<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->

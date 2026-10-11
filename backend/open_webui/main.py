@@ -187,6 +187,7 @@ from open_webui.routers.retrieval import (
 )
 from open_webui.ravenous_input.api import router as ravenous_input_router
 from open_webui.ravenous_research.api import router as ravenous_research_router
+from open_webui.ravenous_tasks.api import router as ravenous_tasks_router
 from open_webui.ravenous_input.grammar import start_checker, stop_checker
 from open_webui.socket.main import (
     MODELS,
@@ -857,6 +858,7 @@ app.include_router(audio.router, prefix='/api/v1/audio', tags=['audio'])
 app.include_router(retrieval.router, prefix='/api/v1/retrieval', tags=['retrieval'])
 app.include_router(ravenous_input_router, prefix='/api/v1/ravenous/input', tags=['ravenous-input'])
 app.include_router(ravenous_research_router, prefix='/api/v1/ravenous/research', tags=['ravenous-research'])
+app.include_router(ravenous_tasks_router, prefix='/api/v1/ravenous/adaptive', tags=['ravenous-adaptive'])
 
 app.include_router(configs.router, prefix='/api/v1/configs', tags=['configs'])
 
@@ -1652,6 +1654,8 @@ async def chat_completion(
         )
 
     async def process_chat(request, form_data, user, metadata, model, tasks=None):
+        from open_webui.ravenous_memory.client import begin_scope, end_scope, scoped_stream
+        memory_scope = begin_scope(metadata)
         try:
             ctx = None
             if metadata.get('assistant_message_id'):
@@ -1686,7 +1690,10 @@ async def chat_completion(
             else:
                 ctx.update(form_data=form_data, metadata=metadata, events=events, tasks=tasks)
 
-            return await process_chat_response(response, ctx)
+            response = await process_chat_response(response, ctx)
+            if isinstance(response, StreamingResponse):
+                response.body_iterator = scoped_stream(response.body_iterator, metadata)
+            return response
         except asyncio.CancelledError:
             log.info('Chat processing was cancelled')
             try:
@@ -1738,6 +1745,7 @@ async def chat_completion(
                     detail=error_detail,
                 )
         finally:
+            end_scope(memory_scope)
             # Clean up MCP clients.  Each client is isolated so one
             # failure doesn't skip the rest.
             #
@@ -2393,6 +2401,8 @@ async def get_app_config(request: Request):
                     'enable_google_drive_integration': config.get('google_drive.enable'),
                     'enable_onedrive_integration': config.get('onedrive.enable'),
                     'enable_memories': config.get('memories.enable'),
+                    'ravenous_memory': os.environ.get('RAVENOUS_MEMORY_ENABLED') == 'true',
+                    'ravenous_adaptive': os.environ.get('RAVENOUS_ADAPTIVE_ENABLED') == 'true',
                     **(
                         {
                             'enable_onedrive_personal': ENABLE_ONEDRIVE_PERSONAL,

@@ -53,6 +53,9 @@ from open_webui.models.models import Models
 from open_webui.models.notes import Notes
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.users import UserModel, Users
+from open_webui.ravenous_memory.client import (
+    suppress_native as memory_native_suppressed,
+)
 from open_webui.ravenous_input.pipeline import prepare_request_prompt
 from open_webui.retrieval.ravenous_union_rerank import (
     RETRIEVAL_ASSESSMENT_KEY,
@@ -2424,6 +2427,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if not isinstance(metadata.get('chat_id'), str):
         metadata['chat_id'] = ''
 
+    from open_webui.ravenous_memory.client import configured as memory_configured
+    if memory_configured() and (
+        getattr(request.state, 'direct', False) or not is_saved_chat_id(metadata['chat_id'])
+    ):
+        metadata['ravenous_memory_excluded'] = True
+
     # Pipeline Inlet -> Filter Inlet -> Chat Memory -> Chat Web Search -> Chat Image Generation
     # -> Chat Code Interpreter (Form Data Update) -> (Default) Chat Tools Function Calling
     # -> Chat Files
@@ -2512,7 +2521,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
 
-    if is_saved_chat_id(chat_id) and user_message_id:
+    from open_webui.ravenous_memory.chat import connection as memory_connection, own_chat as own_memory_chat, prepare as prepare_memory, snapshot as memory_snapshot
+    ravenous_memory_target = await memory_connection(request, model)
+    if ravenous_memory_target:
+        # Establish the sole local context owner before any native memory tools.
+        # Retain the unmodified transcript while tools/evidence are assembled.
+        await own_memory_chat(user, metadata)
+        memory_originals = memory_snapshot(copy.deepcopy(form_data['messages']))
+
+    if is_saved_chat_id(chat_id) and user_message_id and not ravenous_memory_target:
         if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
             compaction_models = {
                 **dict(request.app.state.MODELS.items()),
@@ -2732,6 +2749,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if (
             'memory' in features
             and features['memory']
+            and not memory_native_suppressed(metadata)
             and await Config.get('memories.enable')
             and await Config.get('memories.system_context.enable')
         ):
@@ -3370,8 +3388,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         sources = [*selected_sources, *sources[previous_count:]]
         metadata['sources'] = sources[:]
         # Tool iterations must restore the final, counted evidence selection.
-        system_message = get_system_message(form_data['messages'])
-        metadata['system_prompt'] = get_content_from_message(system_message) if system_message else None
+        system_content = '\n\n'.join(get_content_from_message(row) for row in form_data['messages'] if row.get('role') == 'system')
+        if resolved_model_system_prompt:
+            system_content = f'{resolved_model_system_prompt}\n{system_content}'
+        metadata['system_prompt'] = system_content or None
 
     sources = [
         source
@@ -3380,6 +3400,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     ]
     if sources:
         events.append({'sources': sources})
+
+    if ravenous_memory_target:
+        form_data['messages'] = await prepare_memory(request, user, form_data, metadata, ravenous_memory_target,
+                                                    model=model, originals=memory_originals)
+        # Native tool iterations restore this prompt, including recalled context.
+        system_message = get_system_message(form_data['messages'])
+        metadata['system_prompt'] = get_content_from_message(system_message) if system_message else None
+        metadata['user_prompt'] = get_last_user_message(form_data['messages'])
 
     return form_data, metadata, events
 
@@ -4143,7 +4171,10 @@ async def background_tasks_handler(ctx):
                         except Exception as e:
                             pass
 
-        if messages:
+        if messages and metadata.get('ravenous_memory_owned'):
+            from open_webui.ravenous_memory.chat import completed as memory_completed
+            await memory_completed(request, user, metadata, message_list)
+        elif messages and not memory_native_suppressed(metadata):
             await review_memory_after_turn(
                 request=request,
                 user=user,
@@ -4330,6 +4361,10 @@ async def non_streaming_chat_response_handler(response, ctx):
         return response
     from open_webui.ravenous_research.responses import finish_json
     response_data = finish_json(response_data, metadata)
+    from open_webui.ravenous_memory.chat import publish as publish_memory
+    await publish_memory(request, user, metadata, event_emitter)
+    if metadata.get('ravenous_context') is not None:
+        response_data['ravenous_context'] = metadata['ravenous_context']
     response = build_response_object(response, response_data)
 
     chat_id = metadata.get('chat_id') or ''
@@ -4555,6 +4590,8 @@ async def streaming_chat_response_handler(response, ctx):
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
     continuing = bool(metadata.get('assistant_message_id'))
+    from open_webui.ravenous_memory.chat import publish as publish_memory
+    await publish_memory(request, user, metadata, event_emitter)
 
     extra_params = {
         '__event_emitter__': event_emitter,
@@ -6672,6 +6709,7 @@ async def streaming_chat_response_handler(response, ctx):
                     'done': True,
                     'output': current_output,
                     'title': title,
+                    **({'ravenous_context': metadata['ravenous_context']} if metadata.get('ravenous_context') is not None else {}),
                     **({'usage': usage} if usage else {}),
                 }
 

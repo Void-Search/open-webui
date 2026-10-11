@@ -5,7 +5,6 @@ import base64
 import copy
 import inspect
 import logging
-import os
 import re
 from functools import cache, partial, update_wrapper
 from typing import (
@@ -44,6 +43,9 @@ from open_webui.models.config import Config
 from open_webui.models.groups import Groups
 from open_webui.models.tools import Tools
 from open_webui.models.users import UserModel
+from open_webui.ravenous_memory.client import (
+    suppress_native as memory_native_suppressed,
+)
 from open_webui.tools.builtin import (
     add_memory,
     ask_user,
@@ -659,6 +661,7 @@ async def get_builtin_tools(
     # Add memory tools when memory is enabled and the model allows this builtin category.
     if (
         is_builtin_tool_enabled('memory')
+        and not memory_native_suppressed(metadata)
         and config.get('memories.enable')
         and features.get('memory')
         and get_model_capability('memory')

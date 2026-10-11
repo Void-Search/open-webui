@@ -11,7 +11,12 @@
 	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
 	import ExperimentalBadge from '$lib/components/common/ExperimentalBadge.svelte';
 	import MemoryModal from './Personalization/MemoryModal.svelte';
-	import { deleteMemoriesByUserId, deleteMemoryById, getMemories } from '$lib/apis/memories';
+	import {
+		deleteMemoriesByUserId,
+		deleteMemoryById,
+		getMemories,
+		memoryCaptureSettings
+	} from '$lib/apis/memories';
 	import { toast } from 'svelte-sonner';
 	import UserSettingRow from './UserSettingRow.svelte';
 	import UserSettingSection from './UserSettingSection.svelte';
@@ -29,6 +34,8 @@
 
 	// Addons
 	let enableMemory = false;
+	let automaticCapture = false;
+	let captureReady = false;
 	let memories: Memory[] = [];
 	let loadingMemories = true;
 
@@ -98,6 +105,14 @@
 
 	onMount(async () => {
 		enableMemory = $settings?.memory ?? $config?.features?.enable_memories ?? false;
+		if ($config?.features?.ravenous_memory) {
+			try {
+				automaticCapture = (await memoryCaptureSettings(localStorage.token)).automatic_capture;
+				captureReady = true;
+			} catch (error) {
+				toast.error(`${error}`);
+			}
+		}
 		await loadMemories();
 	});
 </script>
@@ -140,6 +155,27 @@
 			</UserSettingRow>
 
 			{#if enableMemory}
+				{#if $config?.features?.ravenous_memory}
+					<UserSettingRow
+						description="Save preferences and constraints from completed local chats. Temporary chats are excluded."
+					>
+						<span slot="label">Remember automatically</span>
+						{#if captureReady}<Switch
+								ariaLabel="Remember automatically"
+								bind:state={automaticCapture}
+								on:change={async () => {
+									try {
+										automaticCapture = (
+											await memoryCaptureSettings(localStorage.token, automaticCapture)
+										).automatic_capture;
+									} catch (error) {
+										automaticCapture = !automaticCapture;
+										toast.error(`${error}`);
+									}
+								}}
+							/>{:else}<span>Unavailable</span>{/if}
+					</UserSettingRow>
+				{/if}
 				<div>
 					<div class="mb-1 flex items-center">
 						<div class="text-xs text-gray-600 dark:text-gray-400">

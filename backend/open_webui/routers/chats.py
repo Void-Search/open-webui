@@ -716,6 +716,9 @@ async def delete_all_user_chats(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        await memory_call(user, 'DELETE', 'sessions')
     result = await Chats.delete_chats_by_user_id(user.id, db=db)
     if result:
         await publish_event(
@@ -1362,6 +1365,19 @@ async def update_chat_by_id(
 ):
     chat = await Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
     if chat:
+        from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+        if memory_enabled() and form_data.chat.get('history', {}).get('messages'):
+            from open_webui.ravenous_memory.chat import snapshot
+            stored = await Chats.get_messages_map_by_chat_id(id) or {}
+            incoming = form_data.chat['history']['messages']
+            # Normal saves add new messages or sync identical completed output.
+            # Invalidate only changes to existing completed history.
+            edited = any(
+                (previous.get('role') == 'user' or previous.get('done')) and snapshot([previous])[0]['content'] != snapshot([incoming[message_id]])[0]['content']
+                for message_id, previous in stored.items() if message_id in incoming
+            )
+            if edited:
+                await memory_call(user, 'POST', 'sessions/' + id + '/invalidate')
         touch = 'history' in form_data.chat or 'messages' in form_data.chat
         chat = await Chats.update_chat_by_id(id, form_data.chat, db=db, touch=touch)
         if form_data.variables is not None:
@@ -1426,6 +1442,10 @@ async def update_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+        await memory_call(owner, 'POST', 'sessions/' + id + '/invalidate')
     chat = await Chats.upsert_message_to_chat_by_id_and_message_id(
         id,
         message_id,
@@ -1487,6 +1507,10 @@ async def delete_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+        await memory_call(owner, 'POST', 'sessions/' + id + '/invalidate')
     chat = await Chats.delete_message_from_chat_by_id_and_message_id(id, message_id)
     if not chat:
         raise HTTPException(
@@ -1592,11 +1616,15 @@ async def delete_chat_by_id(
 
     # Cancel any in-flight LLM tasks (streaming, title/tags generation) before
     # deleting the chat to prevent orphaned requests.
+    from open_webui.ravenous_memory.client import remove_session as remove_memory_session
+    memory_owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+    await remove_memory_session(memory_owner, id)
     await stop_item_tasks(request.app.state.redis, id)
     await Chats.delete_orphan_tags_for_user(chat.meta.get('tags', []), chat.user_id, threshold=1, db=db)
 
     # Cascade to internal child chats spawned from this one.
     for child_id in await Chats.get_internal_chat_ids_by_parent_id(id, chat.user_id):
+        await remove_memory_session(memory_owner, child_id)
         await stop_item_tasks(request.app.state.redis, child_id)
         await Chats.delete_chat_by_id_and_user_id(child_id, chat.user_id)
 
