@@ -3373,6 +3373,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 ]
                 if inlet_filter_tools:
                     form_data['tools'].extend(inlet_filter_tools)
+
+                from open_webui.ravenous_input.tool_policy import clarification_guidance
+
+                guidance = clarification_guidance(tools_dict, form_data['tools'], form_data['messages'])
+                if guidance:
+                    form_data['messages'] = add_or_update_system_message(
+                        guidance, form_data['messages'], append=True,
+                    )
             else:
                 # If the function calling is not native, then call the tools function calling handler
                 try:
