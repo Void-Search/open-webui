@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from open_webui.config import RAG_EMBEDDING_CONTENT_PREFIX, RAG_EMBEDDING_QUERY_PREFIX
@@ -32,6 +34,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 NATIVE_MEMORY_PREFIX = 'native:'
+
+
+def adapter_memory_path(memory_id: str) -> str:
+    # Adapter IDs are ASCII decimal strings. Reject paths before HTTP clients
+    # can normalize dot segments or interpret query/fragment delimiters.
+    if not re.fullmatch(r'[0-9]+', memory_id):
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
+    return 'memories/' + quote(memory_id, safe='')
 
 
 async def check_memories_permission(user):
@@ -273,8 +283,18 @@ async def update_memories(
         results = []
         for operation in operations:
             action, memory_id = operation['action'], operation.get('id')
+            if action != 'add' and memory_id.startswith(NATIVE_MEMORY_PREFIX):
+                if action == 'remove':
+                    if not await delete_memory_by_id(memory_id, request, user, db=None):
+                        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
+                    results.append({'action': action, 'status': 'deleted', 'id': memory_id})
+                else:
+                    payload = {key: operation[key] for key in ('content', 'type', 'path') if key in operation}
+                    memory = await update_memory_by_id(memory_id, request, MemoryUpdateModel(**payload), user)
+                    results.append({'action': action, 'status': 'updated', 'memory': memory.model_dump(exclude={'meta'})})
+                continue
             if action == 'remove':
-                await ravenous_memory.call(user, 'DELETE', 'memories/' + memory_id)
+                await ravenous_memory.call(user, 'DELETE', adapter_memory_path(memory_id))
                 results.append({'action': action, 'status': 'deleted', 'id': memory_id})
             else:
                 payload = {key: operation[key] for key in ('content', 'type', 'path') if key in operation}
@@ -676,7 +696,7 @@ async def delete_memory_by_id(
     await check_memories_permission(user)
     native_prefixed = ravenous_memory.enabled() and memory_id.startswith(NATIVE_MEMORY_PREFIX)
     if ravenous_memory.enabled() and not native_prefixed:
-        return await ravenous_memory.call(user, 'DELETE', 'memories/' + memory_id)
+        return await ravenous_memory.call(user, 'DELETE', adapter_memory_path(memory_id))
     if native_prefixed:
         memory_id = memory_id.removeprefix(NATIVE_MEMORY_PREFIX)
 

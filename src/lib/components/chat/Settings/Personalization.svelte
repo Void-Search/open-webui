@@ -25,6 +25,7 @@
 	import Search from '$lib/components/icons/Search.svelte';
 	import Trash from '$lib/components/icons/Trash.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
+	import ArrowPath from '$lib/components/icons/ArrowPath.svelte';
 
 	const dispatch = createEventDispatcher();
 
@@ -53,6 +54,7 @@
 		type?: string;
 		path?: string;
 		updated_at?: number;
+		expires_at?: number | null;
 	};
 
 	const loadMemories = async () => {
@@ -157,7 +159,7 @@
 			{#if enableMemory}
 				{#if $config?.features?.ravenous_memory}
 					<UserSettingRow
-						description="Save preferences and constraints from completed local chats. Temporary chats are excluded."
+						description="Save personal facts, preferences and constraints after completed local chats. This runs in the background; refresh saved memories to check for new entries. Temporary chats are excluded."
 					>
 						<span slot="label">Remember automatically</span>
 						{#if captureReady}<Switch
@@ -175,15 +177,29 @@
 								}}
 							/>{:else}<span>Unavailable</span>{/if}
 					</UserSettingRow>
+					<p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+						Changing context expires 180 days after a fresh confirmation. Stable facts and manually
+						saved memories do not expire. Saving an edit makes a memory permanent.
+					</p>
 				{/if}
 				<div>
-					<div class="mb-1 flex items-center">
+					<div class="mb-1 flex items-center justify-between">
 						<div class="text-xs text-gray-600 dark:text-gray-400">
 							{$i18n.t('settings.personal.personalization.savedMemories.label')}
 							{#if !loadingMemories}
 								<span class="ml-1 text-gray-400 dark:text-gray-600">{memories.length}</span>
 							{/if}
 						</div>
+						<button
+							type="button"
+							class={actionButtonClass}
+							aria-label="Refresh memories"
+							title="Refresh memories"
+							disabled={loadingMemories}
+							on:click={loadMemories}
+						>
+							<ArrowPath className="size-3.5" />
+						</button>
 					</div>
 
 					{#if loadingMemories}
@@ -275,11 +291,24 @@
 						{:else}
 							<div class="flex flex-col gap-2">
 								{#each sortedMemories as memory (memory.id)}
-									<div class="flex items-start justify-between gap-3">
-										<div
-											class="min-w-0 whitespace-pre-wrap break-words text-xs text-gray-700 dark:text-gray-300"
-										>
-											{memory.content}
+									<div
+										class="flex items-start justify-between gap-3"
+										data-testid="saved-memory"
+										data-memory-id={memory.id}
+									>
+										<div class="min-w-0 text-xs text-gray-700 dark:text-gray-300">
+											<div class="whitespace-pre-wrap break-words">{memory.content}</div>
+											{#if $config?.features?.ravenous_memory}
+												<div class="mt-0.5 text-gray-500 dark:text-gray-400">
+													{#if memory.expires_at != null}
+														<time datetime={new Date(memory.expires_at * 1000).toISOString()}>
+															Expires {new Date(memory.expires_at * 1000).toLocaleDateString()}
+														</time>
+													{:else}
+														No expiry
+													{/if}
+												</div>
+											{/if}
 										</div>
 										<div class="flex shrink-0 items-center justify-end gap-2">
 											<button

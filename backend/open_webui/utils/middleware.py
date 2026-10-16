@@ -4040,6 +4040,10 @@ async def background_tasks_handler(ctx):
 
         message_list = get_message_list(messages_map, metadata['message_id'])
 
+        if message_list and metadata.get('ravenous_memory_owned'):
+            from open_webui.ravenous_memory.chat import completed as memory_completed
+            await memory_completed(request, user, metadata, message_list)
+
         # Remove details tags and files from the messages.
         # as get_message_list creates a new list, it does not affect
         # the original messages outside of this handler
@@ -4226,10 +4230,7 @@ async def background_tasks_handler(ctx):
                         except Exception as e:
                             pass
 
-        if messages and metadata.get('ravenous_memory_owned'):
-            from open_webui.ravenous_memory.chat import completed as memory_completed
-            await memory_completed(request, user, metadata, message_list)
-        elif messages and not memory_native_suppressed(metadata):
+        if messages and not metadata.get('ravenous_memory_owned') and not memory_native_suppressed(metadata):
             await review_memory_after_turn(
                 request=request,
                 user=user,

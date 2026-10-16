@@ -739,10 +739,18 @@ async def get_builtin_tools(
     ):
         builtin_functions.extend([delegate_task, timer])
 
-    # Add memory tools when memory is enabled and the model allows this builtin category.
+    # Owned local chats use the same tools through the identity-scoped adapter.
+    # Native context/review remains suppressed; explicit memory operations do not.
     if (
         is_builtin_tool_enabled('memory')
-        and not memory_native_suppressed(metadata)
+        and (
+            not memory_native_suppressed(metadata)
+            or (
+                metadata.get('ravenous_memory_owned')
+                and not metadata.get('ravenous_memory_excluded')
+                and getattr(request.state, 'direct', False) is not True
+            )
+        )
         and config.get('memories.enable')
         and features.get('memory')
         and get_model_capability('memory')
