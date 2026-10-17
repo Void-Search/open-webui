@@ -1,2 +1,0 @@
-# Retired: canonical terms are packaged in ravenous_common/protected-terms.txt.
-# This compatibility path is not read by the Open WebUI adapters.
