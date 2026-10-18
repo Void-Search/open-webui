@@ -3,6 +3,7 @@
 ARG USE_PERMISSION_HARDENING=false
 
 ARG BUILD_HASH=dev-build
+ARG BUILD_CHANNEL=unknown
 # Override at your own risk - non-root configurations are untested
 ARG UID=0
 ARG GID=0
@@ -10,6 +11,7 @@ ARG GID=0
 ######## WebUI frontend ########
 FROM --platform=$BUILDPLATFORM node:22-alpine3.20@sha256:2289fb1fba0f4633b08ec47b94a89c7e20b829fc5679f9b7b298eaa2f1ed8b7e AS build
 ARG BUILD_HASH
+ARG BUILD_CHANNEL
 ARG UID
 ARG GID
 
@@ -27,6 +29,7 @@ RUN npm ci --force
 
 COPY . .
 ENV APP_BUILD_HASH=${BUILD_HASH}
+ENV APP_BUILD_CHANNEL=${BUILD_CHANNEL}
 RUN npm run build && find build -type f -name '*.map' -delete
 
 # Prepare backend ownership before the final copy so static assets occupy one layer.
@@ -134,7 +137,7 @@ RUN if [ "$USE_PERMISSION_HARDENING" = "true" ]; then \
 USER $UID:$GID
 
 ARG BUILD_HASH
-ENV WEBUI_BUILD_VERSION=${BUILD_HASH}
+ENV WEBUI_BUILD_HASH=${BUILD_HASH}
 ENV DOCKER=true
 
 CMD [ "bash", "start.sh"]
