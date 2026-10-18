@@ -106,6 +106,7 @@ from open_webui.tools.builtin import (
     write_note,
 )
 from open_webui.utils.access_control import has_access, has_connection_access, has_permission
+from open_webui.utils.ask_user import get_ask_user_parameters_schema
 from open_webui.utils.chat_id import is_saved_chat_id, is_temporary_chat_id
 from open_webui.utils.headers import (
     bearer_auth_header,
@@ -1114,6 +1115,15 @@ def get_builtin_function_introspection(func: Callable):
 
 @cache
 def build_builtin_tool_spec_json(func: Callable) -> str:
+    if func is ask_user:
+        # list[dict] loses the browser contract during generic introspection.
+        return JSONCodec.dumps(
+            {
+                'name': func.__name__,
+                'description': parse_description(func.__doc__),
+                'parameters': get_ask_user_parameters_schema(),
+            }
+        )
     pydantic_model = convert_function_to_pydantic_model(func, get_builtin_function_introspection(func))
     spec = convert_pydantic_model_to_openai_function_spec(pydantic_model)
     return JSONCodec.dumps(clean_openai_tool_schema(spec))
