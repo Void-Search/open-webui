@@ -1,10 +1,9 @@
-name: Ravenous application tests
+name: Ravenous source checks
 
-on:
+'on':
   push:
     branches: [ravenous]
-  pull_request:
-    branches: [ravenous]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,13 +12,18 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      matrix:
-        python-version: ['3.11', '3.12']
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -r backend/tests/ravenous/requirements.txt
-      - run: PYTHONPATH=backend python -m pytest -q backend/tests/ravenous
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install ruff==0.15.5
+      # Application integration tests live in the parent Ravenous repository.
+      - name: Lint Ravenous source
+        run: |
+          python -m ruff check --isolated --select E4,E7,E9,F,I --target-version py310 \
+            backend/open_webui/ravenous* backend/open_webui/retrieval/ravenous_union_rerank.py
+      - name: Compile Ravenous source
+        run: python -m compileall -q backend/open_webui/ravenous* backend/open_webui/retrieval/ravenous_union_rerank.py
