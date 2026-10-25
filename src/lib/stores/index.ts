@@ -368,6 +368,8 @@ type Config = {
 	default_prompt_suggestions: PromptSuggestion[] | null;
 	default_prompt_suggestions_i18n?: Record<string, { suggestion_prompts: PromptSuggestion[] }>;
 	features: {
+		ravenous_memory?: boolean;
+		ravenous_adaptive?: boolean;
 		enable_encrypted_channels?: boolean;
 		slim?: boolean;
 		auth: boolean;

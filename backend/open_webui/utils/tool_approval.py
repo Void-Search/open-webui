@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.models.chats import Chats
+from open_webui.ravenous_sharing import require_chat_owner
 from open_webui.models.config import Config
 from open_webui.models.users import Users
 from open_webui.socket.main import get_event_emitter
@@ -77,6 +78,7 @@ async def resolve_tool_call_output(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
+    require_chat_owner(chat, user)
 
     async with Chats.edit_message_output(chat_id, message_id) as message:
         if not message:

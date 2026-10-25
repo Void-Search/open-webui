@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from open_webui.config import RAG_EMBEDDING_CONTENT_PREFIX, RAG_EMBEDDING_QUERY_PREFIX
@@ -11,6 +13,7 @@ from open_webui.internal.db import get_async_session
 from open_webui.models.config import Config
 from open_webui.models.memories import Memories, MemoryModel
 from open_webui.models.users import Users
+from open_webui.ravenous_memory import client as ravenous_memory
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -29,6 +32,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+NATIVE_MEMORY_PREFIX = 'native:'
+
+
+def adapter_memory_path(memory_id: str) -> str:
+    # Adapter IDs are ASCII decimal strings. Reject paths before HTTP clients
+    # can normalize dot segments or interpret query/fragment delimiters.
+    if not re.fullmatch(r'[0-9]+', memory_id):
+        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
+    return 'memories/' + quote(memory_id, safe='')
 
 
 async def check_memories_permission(user):
@@ -60,8 +72,31 @@ async def get_memories(
     db: AsyncSession = Depends(get_async_session),
 ):
     await check_memories_permission(user)
-
+    if ravenous_memory.enabled():
+        native = await Memories.get_memories_by_user_id(user.id, db=db) or []
+        return [
+            *await ravenous_memory.rows(user),
+            *(memory.model_copy(update={'id': NATIVE_MEMORY_PREFIX + memory.id}) for memory in native),
+        ]
     return await Memories.get_memories_by_user_id(user.id, db=db)
+
+
+class CaptureSettings(BaseModel):
+    automatic_capture: bool
+
+
+@router.get('/settings')
+async def get_capture_settings(user=Depends(get_verified_user)):
+    await check_memories_permission(user)
+    if not ravenous_memory.enabled():
+        return {'automatic_capture': False}
+    return await ravenous_memory.call(user, 'GET', 'settings')
+
+
+@router.put('/settings')
+async def set_capture_settings(body: CaptureSettings, user=Depends(get_verified_user)):
+    await check_memories_permission(user)
+    return await ravenous_memory.call(user, 'PUT', 'settings', body.model_dump())
 
 
 ############################
@@ -119,6 +154,7 @@ def _memory_metadata(memory: MemoryModel) -> dict:
     return {
         'created_at': memory.created_at,
         'updated_at': memory.updated_at,
+        'expires_at': memory.expires_at,
         'type': memory.type,
         'path': memory.path,
     }
@@ -141,7 +177,6 @@ async def reindex_memory_vectors_for_user(
     if not memories:
         return 0
 
-    # One list call so batching and the concurrency limit apply.
     vectors = await request.app.state.EMBEDDING_FUNCTION(
         [memory_vector_text(memory.content, memory.path) for memory in memories],
         prefix=RAG_EMBEDDING_CONTENT_PREFIX,
@@ -191,6 +226,8 @@ async def add_memory(
 
     content = clean_memory_content(form_data.content)
     path = clean_memory_path(form_data.path)
+    if ravenous_memory.enabled():
+        return await ravenous_memory.save(user, {'content': content, 'type': form_data.type, 'path': path})
     memory = await Memories.insert_new_memory(
         user.id,
         content,
@@ -235,6 +272,32 @@ async def update_memories(
     await check_memories_permission(user)
 
     operations = validate_memory_operations(form_data)
+    if ravenous_memory.enabled():
+        if form_data.source == 'background_review':
+            return []
+        results = []
+        for operation in operations:
+            action, memory_id = operation['action'], operation.get('id')
+            if action != 'add' and memory_id.startswith(NATIVE_MEMORY_PREFIX):
+                if action == 'remove':
+                    if not await delete_memory_by_id(memory_id, request, user, db=None):
+                        raise HTTPException(status_code=404, detail=ERROR_MESSAGES.NOT_FOUND)
+                    results.append({'action': action, 'status': 'deleted', 'id': memory_id})
+                else:
+                    payload = {key: operation[key] for key in ('content', 'type', 'path') if key in operation}
+                    memory = await update_memory_by_id(memory_id, request, MemoryUpdateModel(**payload), user)
+                    results.append({'action': action, 'status': 'updated', 'memory': memory.model_dump(exclude={'meta'})})
+                continue
+            if action != 'add':
+                adapter_memory_path(memory_id)
+            if action == 'remove':
+                await ravenous_memory.call(user, 'DELETE', adapter_memory_path(memory_id))
+                results.append({'action': action, 'status': 'deleted', 'id': memory_id})
+            else:
+                payload = {key: operation[key] for key in ('content', 'type', 'path') if key in operation}
+                memory = await ravenous_memory.save(user, payload, memory_id if action != 'add' else None)
+                results.append({'action': action, 'status': 'created' if action == 'add' else 'updated', 'memory': memory})
+        return results
     metadata = getattr(request.state, 'metadata', {}) or {}
     model = metadata.get('model')
     source = form_data.source or 'tool'
@@ -335,6 +398,10 @@ async def query_memory(
     # This prevents holding a connection during EMBEDDING_FUNCTION()
     # which makes external embedding API calls (1-5+ seconds).
     await check_memories_permission(user)
+    if ravenous_memory.enabled():
+        memories = [MemoryModel.model_validate(row) for row in await get_memories(request, user, db=None)]
+        matches = search_memory_rows(memories, query=form_data.content, limit=form_data.k or 1)
+        return {'ids': [[row.id for row in matches]], 'documents': [[row.content for row in matches]], 'metadatas': [[_memory_metadata(row) for row in matches]], 'distances': [[1.0 for _ in matches]]}
 
     memories = await Memories.get_memories_by_user_id(user.id)
     if not memories:
@@ -390,7 +457,7 @@ async def search_memories(
 ):
     await check_memories_permission(user)
 
-    memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [MemoryModel.model_validate(row) for row in await get_memories(None, user, db=None)]
     return search_memory_rows(
         memories,
         query=form_data.query,
@@ -408,7 +475,7 @@ async def list_memory_paths(
 ):
     await check_memories_permission(user)
 
-    memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [MemoryModel.model_validate(row) for row in await get_memories(None, user, db=None)]
     return list_memory_path_groups(
         memories,
         query=form_data.query or '',
@@ -424,7 +491,7 @@ async def read_memory_path(
 ):
     await check_memories_permission(user)
 
-    memories = await Memories.get_memories_by_user_id(user.id)
+    memories = [MemoryModel.model_validate(row) for row in await get_memories(None, user, db=None)]
     result = read_memory_path_rows(
         memories,
         path=form_data.path,
@@ -483,9 +550,8 @@ async def reset_memory_from_vector_db(
     """Reset user's memory vector embeddings.
 
     CRITICAL: We intentionally do NOT use Depends(get_async_session) here.
-    This endpoint generates embeddings for ALL user memories. With a session
-    held, this could block a connection for MINUTES, completely exhausting the
-    connection pool.
+    Embedding generation can take minutes; native database operations use short
+    sessions and the embedding client applies its configured batching limits.
     """
     await check_memories_permission(user)
 
@@ -514,14 +580,20 @@ async def delete_memory_by_user_id(
     db: AsyncSession = Depends(get_async_session),
 ):
     await check_memories_permission(user)
+    adapter_deleted = False
+    if ravenous_memory.enabled():
+        adapter_deleted = await ravenous_memory.call(user, 'DELETE', 'memories')
 
     result = await Memories.delete_memories_by_user_id(user.id, db=db)
+    if adapter_deleted and not result:
+        raise HTTPException(status_code=503, detail='Native memory cleanup failed')
 
-    if result:
-        try:
-            await ASYNC_VECTOR_DB_CLIENT.delete_collection(f'user-memory-{user.id}')
-        except Exception as e:
-            log.error(e)
+    if result or adapter_deleted:
+        if result:
+            try:
+                await ASYNC_VECTOR_DB_CLIENT.delete_collection(f'user-memory-{user.id}')
+            except Exception as e:
+                log.error(e)
         await publish_event(
             request,
             EVENTS.MEMORY_DELETED,
@@ -551,6 +623,12 @@ async def update_memory_by_id(
     # short-lived sessions. This prevents holding a connection during
     # EMBEDDING_FUNCTION() which makes external API calls (1-5+ seconds).
     await check_memories_permission(user)
+    native_prefixed = ravenous_memory.enabled() and memory_id.startswith(NATIVE_MEMORY_PREFIX)
+    if ravenous_memory.enabled() and not native_prefixed:
+        adapter_memory_path(memory_id)
+        return await ravenous_memory.save(user, form_data.model_dump(exclude_unset=True), memory_id)
+    if native_prefixed:
+        memory_id = memory_id.removeprefix(NATIVE_MEMORY_PREFIX)
 
     content = clean_memory_content(form_data.content) if form_data.content is not None else None
     path = clean_memory_path(form_data.path)
@@ -593,7 +671,7 @@ async def update_memory_by_id(
         subject_id=memory.id,
         data={'content_preview': memory.content[:300], 'type': memory.type, 'path': memory.path},
     )
-    return memory
+    return memory.model_copy(update={'id': NATIVE_MEMORY_PREFIX + memory.id}) if native_prefixed else memory
 
 
 ############################
@@ -609,6 +687,11 @@ async def delete_memory_by_id(
     db: AsyncSession = Depends(get_async_session),
 ):
     await check_memories_permission(user)
+    native_prefixed = ravenous_memory.enabled() and memory_id.startswith(NATIVE_MEMORY_PREFIX)
+    if ravenous_memory.enabled() and not native_prefixed:
+        return await ravenous_memory.call(user, 'DELETE', adapter_memory_path(memory_id))
+    if native_prefixed:
+        memory_id = memory_id.removeprefix(NATIVE_MEMORY_PREFIX)
 
     result = await Memories.delete_memory_by_id_and_user_id(memory_id, user.id, db=db)
 

@@ -27,6 +27,7 @@ from open_webui.models.access_grants import AccessGrants
 from open_webui.models.automations import Automations
 from open_webui.models.groups import Groups
 from open_webui.models.users import Users
+from open_webui.ravenous_sharing import require_clone_only
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.access_control import (
     filter_allowed_access_grants,
@@ -154,6 +155,7 @@ async def create_folder(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    require_clone_only((form_data.data or {}).get('share_mode'))
     await check_folders_permission(request, user, db=db)
     folder = await Folders.get_folder_by_parent_id_and_user_id_and_name(
         form_data.parent_id, user.id, form_data.name, db=db
@@ -340,6 +342,7 @@ async def update_folder_name_by_id(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    require_clone_only((form_data.data or {}).get('share_mode'))
     await check_folders_permission(request, user, db=db)
     folder = await Folders.get_folder_by_id_and_user_id(id, user.id, db=db)
     if not folder:
@@ -540,6 +543,7 @@ async def update_folder_access_by_id(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    require_clone_only(form_data.share_mode)
     await check_folders_permission(request, user, db=db)
     folder = await Folders.get_folder_by_id(id, db=db)
     if not folder:

@@ -73,6 +73,8 @@
 	import { RealtimeCall, getBridgeTurnState, type BridgeSubmission } from '$lib/utils/realtime';
 	import { acquireWakeLock } from '$lib/utils/wakeLock';
 	import { routeAvatarAnimation } from '$lib/utils/voice-avatar';
+	import AdaptiveTask from './AdaptiveTask.svelte';
+	import type { AdaptiveTask as AdaptiveTaskState } from '$lib/apis/adaptive';
 	import { createTemporaryChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	import {
 		applyResponseStreamEvent,
@@ -490,7 +492,67 @@
 		} else await submitPrompt(instruction, attachments);
 	};
 
-	let params = {};
+	let params: Record<string, any> = {};
+	let adaptivePersistence: Promise<unknown> = Promise.resolve();
+
+	const adaptiveStarted = async ({
+		taskId,
+		prompt: taskPrompt
+	}: {
+		taskId: string;
+		prompt: string;
+	}) => {
+		params = { ...params, ravenous_adaptive_task: taskId };
+		const messageId = uuidv4();
+		const parentId = history.currentId;
+		params = { ...params, ravenous_adaptive_parent: messageId };
+		history.messages[messageId] = {
+			id: messageId,
+			parentId,
+			childrenIds: [],
+			role: 'user',
+			content: taskPrompt,
+			done: true,
+			timestamp: Math.floor(Date.now() / 1000),
+			models: selectedModels
+		};
+		if (parentId) history.messages[parentId].childrenIds.push(messageId);
+		history.currentId = messageId;
+		history = history;
+		if (!$chatId) await initChatHandler(history);
+		else await saveChatHandler($chatId, history);
+	};
+
+	const adaptiveCompleted = async ({ task }: { task: AdaptiveTaskState }) => {
+		await adaptivePersistence;
+		if (params.ravenous_adaptive_task !== task.id) return;
+		if (
+			Object.values(history.messages).some(
+				(message: any) => message.meta?.ravenous_task_id === task.id
+			)
+		)
+			return;
+		const messageId = uuidv4();
+		const parentId = params.ravenous_adaptive_parent ?? history.currentId;
+		history.messages[messageId] = {
+			id: messageId,
+			parentId,
+			childrenIds: [],
+			role: 'assistant',
+			content: task.answer,
+			done: true,
+			model: 'local-default',
+			modelName: 'Ravenous adaptive',
+			modelIdx: 0,
+			meta: { ravenous_task_id: task.id },
+			timestamp: Math.floor(Date.now() / 1000)
+		};
+		if (parentId) history.messages[parentId].childrenIds.push(messageId);
+		if (history.currentId === parentId) history.currentId = messageId;
+		history = history;
+		await saveChatHandler($chatId, history);
+	};
+
 	let chatVariables = {};
 	let showChatVariablesModal = false;
 	let loadedChatIdProp = '';
@@ -3435,6 +3497,8 @@
 
 	const chatCompletionEventHandler = async (data, message, chatId, shared = false) => {
 		const { id, done, choices, content, output, sources, selected_model_id, error, usage } = data;
+		if (data.ravenous_context)
+			message.meta = { ...message.meta, ravenous_context: data.ravenous_context };
 
 		if (error) {
 			if (shared) message.error = error;
@@ -5188,6 +5252,40 @@
 						/>
 					{/if}
 					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
+						{#if $config?.features?.ravenous_adaptive && !isShared && !embedded && !chat?.meta?.internal}
+							{#key $chatId}
+								<AdaptiveTask
+									taskId={params.ravenous_adaptive_task ?? ''}
+									temporary={$temporaryChatEnabled}
+									sessionId={$chatId ?? ''}
+									initialPrompt={prompt}
+									contextMessages={createMessagesList(history, history.currentId)
+										.filter(
+											(message) =>
+												['system', 'user', 'assistant'].includes(message.role) &&
+												typeof message.content === 'string'
+										)
+										.map((message) => ({ role: message.role, content: message.content }))}
+									on:started={(event) => {
+										adaptivePersistence = adaptiveStarted(event.detail).catch((error) => {
+											toast.error(String(error));
+										});
+									}}
+									on:complete={(event) =>
+										adaptiveCompleted(event.detail).catch((error) => {
+											toast.error(String(error));
+										})}
+									on:reset={() => {
+										params = {
+											...params,
+											ravenous_adaptive_task: '',
+											ravenous_adaptive_parent: null
+										};
+										void saveChatHandler($chatId, history);
+									}}
+								/>
+							{/key}
+						{/if}
 						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
 							<div
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"

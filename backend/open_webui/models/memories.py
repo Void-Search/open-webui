@@ -29,7 +29,7 @@ class Memory(Base):  # user memory store
 
 
 class MemoryModel(BaseModel):
-    """Pydantic mirror of the Memory table row."""
+    """Memory response including adapter-owned lifecycle metadata."""
 
     id: str
     user_id: str
@@ -39,6 +39,7 @@ class MemoryModel(BaseModel):
     meta: dict | None = None
     updated_at: int  # timestamp in epoch
     created_at: int  # timestamp in epoch
+    expires_at: int | None = None  # Response-only adapter lifecycle metadata.
     model_config = ConfigDict(from_attributes=True)  # allows ORM mapping
 
 

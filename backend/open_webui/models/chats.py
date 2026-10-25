@@ -18,6 +18,7 @@ from open_webui.models.automations import AutomationRun
 from open_webui.models.chat_messages import ChatMessage, ChatMessages
 from open_webui.models.folders import Folders
 from open_webui.models.tags import Tag, TagModel, Tags
+from open_webui.ravenous_sharing import personal_workflows
 from open_webui.utils.misc import get_output_text, sanitize_data_for_db, sanitize_text_for_db
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import (
@@ -1921,9 +1922,12 @@ class ChatTable:
         chat = chat if chat is not None else await self.get_chat_by_id(id, db=db)
         if not chat:
             return None
+        if chat.user_id == user.id:
+            return ChatModel.model_validate(chat)
+        if permission == 'write' and personal_workflows():
+            return None
         if (
-            chat.user_id == user.id
-            or user.role == 'admin'
+            user.role == 'admin'
             and permission == 'read'
             and (ENABLE_ADMIN_CHAT_ACCESS or is_internal_chat(chat.meta))
         ):

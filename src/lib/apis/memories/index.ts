@@ -1,5 +1,15 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 
+export const memoryCaptureSettings = async (token: string, automatic?: boolean) => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/memories/settings`, {
+		method: automatic === undefined ? 'GET' : 'PUT',
+		headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
+		...(automatic === undefined ? {} : { body: JSON.stringify({ automatic_capture: automatic }) })
+	});
+	if (!response.ok) throw (await response.json()).detail ?? 'Memory service unavailable';
+	return response.json();
+};
+
 export const getMemories = async (token: string) => {
 	let error = null;
 

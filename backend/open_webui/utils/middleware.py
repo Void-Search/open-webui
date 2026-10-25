@@ -54,6 +54,7 @@ from open_webui.models.folders import Folders
 from open_webui.models.models import Models
 from open_webui.models.notes import Notes
 from open_webui.models.users import UserModel, Users
+from open_webui.ravenous_memory.client import suppress_native as memory_native_suppressed
 from open_webui.ravenous_input.pipeline import prepare_request_prompt
 from open_webui.retrieval.ravenous_union_rerank import (
     RETRIEVAL_ASSESSMENT_KEY,
@@ -2053,6 +2054,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if not isinstance(metadata.get('chat_id'), str):
         metadata['chat_id'] = ''
 
+    from open_webui.ravenous_memory.client import configured as memory_configured
+    if memory_configured() and (
+        getattr(request.state, 'direct', False) or not is_saved_chat_id(metadata['chat_id'])
+    ):
+        metadata['ravenous_memory_excluded'] = True
+
     # Pipeline Inlet -> Filter Inlet -> Chat Memory -> Chat Web Search -> Chat Image Generation
     # -> Chat Code Interpreter (Form Data Update) -> (Default) Chat Tools Function Calling
     # -> Chat Files
@@ -2112,7 +2119,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         chat and chat.user_id == user.id and payload_tools is None and use_builtin_tools
     )
 
-    if is_saved_chat_id(chat_id) and user_message_id:
+    from open_webui.ravenous_memory.chat import connection as memory_connection, own_chat as own_memory_chat, prepare as prepare_memory, snapshot as memory_snapshot
+    ravenous_memory_target = await memory_connection(request, model)
+    if ravenous_memory_target:
+        await own_memory_chat(user, metadata)
+        memory_originals = memory_snapshot(copy.deepcopy(form_data['messages']))
+
+    if is_saved_chat_id(chat_id) and user_message_id and not ravenous_memory_target:
         db_messages = await load_messages_from_db(chat_id, user_message_id)
         if db_messages:
             # Continue: frontend sends assistant_message_id when continuing
@@ -2385,6 +2398,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if (
             'memory' in features
             and features['memory']
+            and not memory_native_suppressed(metadata)
             and await Config.get('memories.enable')
             and await Config.get('memories.system_context.enable')
         ):
@@ -2542,7 +2556,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if skill_ids or (use_builtin_tools and model_builtin_tools.get('skills', True)):
         from open_webui.models.skills import Skills as SkillsModel
-        from open_webui.utils.skill_files import format_skill_content, skill_overview
+        from open_webui.utils.skill_files import skill_overview
         from open_webui.utils.terminals import (
             format_terminal_skill_context,
             format_terminal_skill_manifest_entry,
@@ -2584,7 +2598,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     [f['path'] for f in snapshot['data']['files'] if f['path'] != 'SKILL.md'],
                     tools_enabled=skill_tools_enabled,
                 )
-                root_content = format_skill_content(overview, skill.id, skill_tools_enabled)
+                # Active skill instructions are part of the final prompt budget.
+                # Bounded previews are for discovery tools, not selected skills.
+                root_content = snapshot['content']
                 resources = '\n'.join(overview['files'])
                 resource_hint = (
                     f'\nSupporting files:\n{resources}'
@@ -2632,6 +2648,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     extra_params,
                     overview=True,
                     tools_enabled=use_builtin_tools and model_builtin_tools.get('skills', True),
+                    full_instructions=True,
                 )
                 if loaded:
                     form_data['messages'] = add_or_update_system_message(
@@ -3131,6 +3148,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     ]
     if sources:
         events.append({'sources': sources})
+
+    if ravenous_memory_target:
+        form_data['messages'] = await prepare_memory(
+            request, user, form_data, metadata, ravenous_memory_target,
+            model=model, originals=memory_originals, requested_memory=features.get('memory', False),
+        )
+        from open_webui.ravenous_memory.chat import remember_base_prompt
+
+        remember_base_prompt(metadata)
+
+    form_data = normalize_messages_for_model(form_data)
 
     return form_data, metadata, events, False
 
@@ -3641,6 +3669,10 @@ async def background_tasks_handler(ctx):
 
         message_list = get_message_list(messages_map, metadata['message_id'])
 
+        if message_list and metadata.get('ravenous_memory_owned'):
+            from open_webui.ravenous_memory.chat import completed as memory_completed
+            await memory_completed(request, user, metadata, message_list)
+
         # Remove details tags and files from the messages.
         # as get_message_list creates a new list, it does not affect
         # the original messages outside of this handler
@@ -3835,7 +3867,7 @@ async def background_tasks_handler(ctx):
                         except Exception as e:
                             pass
 
-        if messages:
+        if messages and not metadata.get('ravenous_memory_owned') and not memory_native_suppressed(metadata):
             await review_memory_after_turn(
                 request=request,
                 user=user,
@@ -4024,6 +4056,10 @@ async def non_streaming_chat_response_handler(response, ctx):
         return response
     from open_webui.ravenous_research.responses import finish_json
     response_data = finish_json(response_data, metadata)
+    from open_webui.ravenous_memory.chat import publish as publish_memory
+    await publish_memory(request, user, metadata, event_emitter)
+    if metadata.get('ravenous_context') is not None:
+        response_data['ravenous_context'] = metadata['ravenous_context']
     response = build_response_object(response, response_data)
 
     chat_id = metadata.get('chat_id') or ''
@@ -4237,6 +4273,8 @@ async def streaming_chat_response_handler(response, ctx):
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
     continuing = bool(metadata.get('assistant_message_id'))
+    from open_webui.ravenous_memory.chat import publish as publish_memory
+    await publish_memory(request, user, metadata, event_emitter)
 
     extra_params = {
         '__event_emitter__': event_emitter,
@@ -6098,50 +6136,51 @@ async def streaming_chat_response_handler(response, ctx):
                                 )
 
                             try:
-                                user_messages = [
-                                    (message, message.get('content'))
-                                    for message in messages
-                                    if user_prompt
-                                    and message.get('role') == 'user'
-                                    and message.get('content') == user_prompt.get('content')
-                                ]
-                                try:
-                                    # Summarize the user's text, then restore source context for the model.
-                                    for message, _ in user_messages:
-                                        message['content'] = copy.deepcopy(message.get('content'))
-                                        set_last_user_message_content(
-                                            metadata.get('base_user_prompt') or user_message, [message]
+                                if not memory_native_suppressed(metadata):
+                                    user_messages = [
+                                        (message, message.get('content'))
+                                        for message in messages
+                                        if user_prompt
+                                        and message.get('role') == 'user'
+                                        and message.get('content') == user_prompt.get('content')
+                                    ]
+                                    try:
+                                        # Summarize the user's text, then restore source context for the model.
+                                        for message, _ in user_messages:
+                                            message['content'] = copy.deepcopy(message.get('content'))
+                                            set_last_user_message_content(
+                                                metadata.get('base_user_prompt') or user_message, [message]
+                                            )
+                                        messages, context_summary, compacted = await compact_messages_for_request(
+                                            request, user, messages, metadata, model_id, request.app.state.MODELS
                                         )
-                                    messages, context_summary, compacted = await compact_messages_for_request(
-                                        request, user, messages, metadata, model_id, request.app.state.MODELS
-                                    )
-                                finally:
-                                    for message, content in user_messages:
-                                        message['content'] = content
-                                if compacted:
-                                    if user_prompt is not None:
-                                        messages = [message for message in messages if message != user_prompt]
-                                        messages.insert(
-                                            1 if messages and messages[0].get('role') == 'system' else 0,
-                                            dict(user_prompt),
+                                    finally:
+                                        for message, content in user_messages:
+                                            message['content'] = content
+                                    if compacted:
+                                        if user_prompt is not None:
+                                            messages = [message for message in messages if message != user_prompt]
+                                            messages.insert(
+                                                1 if messages and messages[0].get('role') == 'system' else 0,
+                                                dict(user_prompt),
+                                            )
+                                        checkpoint = next(
+                                            idx for idx, message in enumerate(messages) if message.get('role') != 'system'
                                         )
-                                    checkpoint = next(
-                                        idx for idx, message in enumerate(messages) if message.get('role') != 'system'
-                                    )
-                                    messages[checkpoint] = {**messages[checkpoint], 'contextSummary': context_summary}
-                                    output.append(
-                                        {
-                                            'type': 'open_webui:context_compaction',
-                                            'id': output_id('cc'),
-                                            'call_id': next(
-                                                message['tool_calls'][0]['id']
-                                                for message in messages
-                                                if message.get('tool_calls')
-                                            ),
-                                            'summary': context_summary,
-                                        }
-                                    )
-                                    await emit_output()
+                                        messages[checkpoint] = {**messages[checkpoint], 'contextSummary': context_summary}
+                                        output.append(
+                                            {
+                                                'type': 'open_webui:context_compaction',
+                                                'id': output_id('cc'),
+                                                'call_id': next(
+                                                    message['tool_calls'][0]['id']
+                                                    for message in messages
+                                                    if message.get('tool_calls')
+                                                ),
+                                                'summary': context_summary,
+                                            }
+                                        )
+                                        await emit_output()
                             except Exception:
                                 log.exception('Tool loop context compaction failed; keeping the current context')
 

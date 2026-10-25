@@ -37,6 +37,8 @@ from open_webui.models.config import Config
 from open_webui.models.folders import Folders
 from open_webui.models.shared_chats import ChatShareMode, ShareChatForm, SharedChatResponse, SharedChats
 from open_webui.models.tags import TagModel, Tags
+from open_webui.models.users import Users
+from open_webui.ravenous_sharing import personal_workflows, require_clone_only
 from open_webui.socket.main import get_event_emitter
 from open_webui.tasks import get_response_streams_by_chat_id, has_active_tasks, stop_item_tasks
 from open_webui.utils.access_control import filter_allowed_access_grants, has_permission
@@ -761,6 +763,9 @@ async def delete_all_user_chats(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        await memory_call(user, 'DELETE', 'sessions')
     tag_ids = [tag.id for tag in await Tags.get_tags_by_user_id(user.id, db=db)]
     result = await Chats.delete_chats_by_user_id(user.id, db=db)
     if result:
@@ -1454,6 +1459,26 @@ async def update_chat_by_id(
 ):
     chat = await Chats.get_chat_by_id_and_user_id(id, user.id, db=db)
     if chat:
+        from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+        incoming_history = form_data.chat.get('history')
+        if memory_enabled() and isinstance(incoming_history, dict) and 'messages' in incoming_history:
+            from open_webui.ravenous_memory.chat import snapshot
+            stored = await Chats.get_messages_map_by_chat_id(id) or {}
+            incoming = incoming_history.get('messages') or {}
+            # Normal saves add new messages or sync identical completed output.
+            # Invalidate only changes to existing completed history.
+            edited = bool(stored.keys() - incoming.keys()) or any(
+                (previous.get('role') == 'user' or previous.get('done'))
+                and (
+                    snapshot([previous])[0]['content'] != snapshot([incoming[message_id]])[0]['content']
+                    or previous.get('parentId') != incoming[message_id].get('parentId')
+                )
+                for message_id, previous in stored.items() if message_id in incoming
+            )
+            if edited:
+                await memory_call(user, 'POST', 'sessions/' + id + '/invalidate')
+        elif memory_enabled() and 'messages' in form_data.chat:
+            await memory_call(user, 'POST', 'sessions/' + id + '/invalidate')
         touch = 'history' in form_data.chat or 'messages' in form_data.chat
         chat = await Chats.update_chat_by_id(id, form_data.chat, db=db, touch=touch)
         if form_data.variables is not None:
@@ -1524,6 +1549,10 @@ async def update_chat_message_by_id(
         updates['meta'] = {'voice': form_data.voice}
     if not updates:
         raise HTTPException(400, 'No message changes supplied')
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+        await memory_call(owner, 'POST', 'sessions/' + id + '/invalidate')
     chat = await Chats.upsert_message_to_chat_by_id_and_message_id(id, message_id, updates)
 
     event_emitter = await get_event_emitter(
@@ -1579,6 +1608,10 @@ async def delete_chat_message_by_id(
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    from open_webui.ravenous_memory.client import call as memory_call, enabled as memory_enabled
+    if memory_enabled():
+        owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+        await memory_call(owner, 'POST', 'sessions/' + id + '/invalidate')
     chat = await Chats.delete_message_from_chat_by_id_and_message_id(id, message_id)
     if not chat:
         raise HTTPException(
@@ -1686,11 +1719,15 @@ async def delete_chat_by_id(
 
     # Cancel any in-flight LLM tasks (streaming, title/tags generation) before
     # deleting the chat to prevent orphaned requests.
+    from open_webui.ravenous_memory.client import remove_session as remove_memory_session
+    memory_owner = user if chat.user_id == user.id else await Users.get_user_by_id(chat.user_id)
+    await remove_memory_session(memory_owner, id)
     await stop_item_tasks(request.app.state.redis, id)
     await Chats.delete_orphan_tags_for_user(chat.meta.get('tags', []), chat.user_id, threshold=1, db=db)
 
     # Cascade to internal child chats spawned from this one.
     for child_id in await Chats.get_internal_chat_ids_by_parent_id(id, chat.user_id):
+        await remove_memory_session(memory_owner, child_id)
         await stop_item_tasks(request.app.state.redis, child_id)
         await Chats.delete_chat_by_id_and_user_id(child_id, chat.user_id)
 
@@ -2070,6 +2107,9 @@ async def share_chat_by_id(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    require_clone_only(form_data.share_mode if form_data else None)
+    if personal_workflows():
+        form_data = ShareChatForm(share_mode=None)
     if user.role != 'admin' and not await has_permission(user.id, 'chat.share', await Config.get('user.permissions')):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.ACCESS_PROHIBITED)
 
@@ -2156,6 +2196,7 @@ async def update_shared_chat_access_by_id(
     user=Depends(get_verified_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    require_clone_only(form_data.share_mode)
     if user.role == 'admin' and ENABLE_ADMIN_CHAT_ACCESS:
         chat = await Chats.get_chat_by_id(id, db=db)
     else:

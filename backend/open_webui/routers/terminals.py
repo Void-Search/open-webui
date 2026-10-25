@@ -32,7 +32,6 @@ from open_webui.utils.terminals import (
     terminal_context_id,
     terminal_contexts,
 )
-from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 from yarl import URL
 
@@ -40,11 +39,14 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-STREAMING_CONTENT_TYPES = ('application/octet-stream', 'image/', 'application/pdf')
 ADMIN_API_PATHS = ('api/v1/policies', 'api/v1/status', 'api/v1/terminals')
 # Drop the upstream's server and date: uvicorn adds its own and forwarding both duplicates them.
 STRIPPED_RESPONSE_HEADERS = frozenset(
-    ('transfer-encoding', 'connection', 'content-encoding', 'content-length', 'server', 'date')
+    (
+        'transfer-encoding', 'connection', 'keep-alive', 'proxy-authenticate',
+        'proxy-authorization', 'te', 'trailer', 'upgrade', 'content-encoding',
+        'content-length', 'server', 'date',
+    )
 )
 
 
@@ -191,68 +193,89 @@ async def proxy_terminal(
             headers.update(bearer_auth_header(oauth_token.get('access_token', '')))
     # auth_type == "none": no Authorization header
 
-    content_type = request.headers.get('content-type')
-    if content_type:
-        headers['Content-Type'] = content_type
+    # Only forward protocol metadata, never browser credentials or identity headers.
+    for name in (
+        'content-type', 'content-length', 'content-encoding', 'accept', 'range',
+        'if-range', 'if-match', 'if-none-match', 'if-modified-since',
+        'if-unmodified-since', 'last-event-id',
+    ):
+        value = request.headers.get(name)
+        if value is not None:
+            headers[name] = value
 
     session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=300, connect=10),
+        # Heartbeats keep active SSE/log streams alive; idle connections remain bounded.
+        timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=300),
         trust_env=True,
     )
+    upstream_response = None
+    cleanup_task = None
+
+    async def cleanup():
+        nonlocal cleanup_task
+        if cleanup_task is None:
+            if upstream_response is not None:
+                upstream_response.close()
+            cleanup_task = asyncio.create_task(session.close())
+        # Finish closing even if a browser disconnect cancels the response task.
+        await asyncio.shield(cleanup_task)
 
     try:
-        body = await request.body()
-
         upstream_response = await session.request(
             method=request.method,
             url=target_url,
             headers=headers,
             cookies=cookies,
-            data=body or None,
+            data=request.stream(),
             ssl=AIOHTTP_CLIENT_SESSION_SSL,
             allow_redirects=False,
         )
 
-        upstream_content_type = upstream_response.headers.get('content-type', '')
+        connection_headers = {
+            name.strip().lower()
+            for name in upstream_response.headers.get('connection', '').split(',')
+        }
         filtered_headers = {
             key: value
             for key, value in upstream_response.headers.items()
-            if key.lower() not in STRIPPED_RESPONSE_HEADERS
+            if key.lower() not in STRIPPED_RESPONSE_HEADERS | connection_headers
         }
         if TERMINAL_PROXY_HEADERS:
             filtered_headers.update(TERMINAL_PROXY_HEADERS)
 
-        # Stream binary responses directly
-        if any(t in upstream_content_type for t in STREAMING_CONTENT_TYPES):
+        async def stream_response():
+            try:
+                async for chunk in upstream_response.content.iter_any():
+                    yield chunk
+            finally:
+                await cleanup()
 
-            async def cleanup():
-                await upstream_response.release()
-                await session.close()
+        class TerminalStreamingResponse(StreamingResponse):
+            async def __call__(self, scope, receive, send):
+                try:
+                    await super().__call__(scope, receive, send)
+                finally:
+                    # Also covers send failures before the iterator starts or resumes.
+                    await cleanup()
 
-            return StreamingResponse(
-                content=upstream_response.content.iter_any(),
-                status_code=upstream_response.status,
-                headers=filtered_headers,
-                background=BackgroundTask(cleanup),
-            )
-
-        # Buffer text/JSON responses
-        response_body = await upstream_response.read()
-        status_code = upstream_response.status
-        await upstream_response.release()
-        await session.close()
-
-        return Response(content=response_body, status_code=status_code, headers=filtered_headers)
+        return TerminalStreamingResponse(
+            content=stream_response(),
+            status_code=upstream_response.status,
+            headers=filtered_headers,
+        )
 
     except ClientDisconnect:
-        await session.close()
+        await cleanup()
         return Response(status_code=499)
+    except asyncio.CancelledError:
+        await cleanup()
+        raise
     except (aiohttp.ClientConnectionError, TimeoutError) as error:
-        await session.close()
+        await cleanup()
         log.error('Terminal proxy error: %s', str(error) or type(error).__name__)
         return JSONResponse({'error': f'Terminal proxy error: {error}'}, status_code=502)
     except Exception as error:
-        await session.close()
+        await cleanup()
         log.exception('Terminal proxy error: %s', error)
         return JSONResponse({'error': f'Terminal proxy error: {error}'}, status_code=502)
 

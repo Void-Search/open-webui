@@ -25,12 +25,11 @@ from open_webui.models.channels import Channel, ChannelMember, Channels
 from open_webui.models.chats import Chats, chat_search_content_query, chat_search_terms
 from open_webui.models.config import Config
 from open_webui.models.groups import Groups
-from open_webui.models.memories import Memories
+from open_webui.models.memories import Memories, MemoryModel
 from open_webui.models.messages import Message, Messages
 from open_webui.models.notes import Notes
 from open_webui.models.users import UserModel
 from open_webui.retrieval.utils import filter_source_metadata, get_content_from_url
-from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.routers.images import (
     CreateImageForm,
     EditImageForm,
@@ -48,6 +47,12 @@ from open_webui.routers.memories import (
 )
 from open_webui.routers.memories import (
     add_memory as _add_memory,
+)
+from open_webui.routers.memories import (
+    delete_memory_by_id as _delete_memory_by_id,
+)
+from open_webui.routers.memories import (
+    get_memories as _get_memories,
 )
 from open_webui.routers.memories import (
     list_memory_paths as _list_memory_paths,
@@ -924,6 +929,8 @@ async def read_memory_path(
             ),
             user,
         )
+        result = {**result, 'memories': [MemoryModel.model_validate(row).model_dump(exclude={'meta'})
+                                       for row in result.get('memories', [])]}
         return JSONCodec.dumps(result, ensure_ascii=False)
     except Exception as e:
         log.exception(f'read_memory_path error: {e}')
@@ -978,6 +985,7 @@ async def search_memories(
                     'content': memory.content,
                     'created_at': time.strftime('%Y-%m-%d', time.localtime(memory.created_at)),
                     'updated_at': time.strftime('%Y-%m-%d', time.localtime(memory.updated_at)),
+                    'expires_at': memory.expires_at,
                 }
                 for memory in memories
             ],
@@ -996,11 +1004,11 @@ async def add_memory(
     __user__: dict = None,
 ) -> str:
     """
-    Save enduring information that can improve future chats.
+    Save information only when the user explicitly asks you to remember or save it in memory.
 
-    Save stable preferences, goals, projects, relationships, habits, and standing instructions.
-    Do not save one-off activity, meals, routine daily events, temporary mood, or other short-lived details
-    unless the user explicitly asks you to remember them.
+    Automatic memory extraction runs separately. Do not call this tool spontaneously
+    because information seems useful. Follow the user's requested scope, including
+    short-lived details when explicitly requested.
 
     :param content: The memory content to store
     :param type: Use "user" for facts/preferences about the user, or "context" for other durable context
@@ -1013,10 +1021,12 @@ async def add_memory(
     try:
         user = UserModel(**__user__) if __user__ else None
 
-        memory = await _add_memory(
-            __request__,
-            AddMemoryForm(content=content, type=Memories.normalize_memory_type(type), path=path),
-            user,
+        memory = MemoryModel.model_validate(
+            await _add_memory(
+                __request__,
+                AddMemoryForm(content=content, type=Memories.normalize_memory_type(type), path=path),
+                user,
+            )
         )
 
         return JSONCodec.dumps(
@@ -1034,12 +1044,12 @@ async def update_memory(
     __user__: dict = None,
 ) -> str:
     """
-    Apply a batch of memory changes after learning enduring information.
+    Apply memory changes only when the user explicitly asks you to save, update, move, or remove memories.
 
+    Automatic memory extraction runs separately. Do not call this tool spontaneously
+    because information seems useful or appears to need updating. Follow the user's requested scope.
     Use type "user" for facts, preferences, or instructions about the user.
     Use type "context" for other durable context that may help future chats.
-    Do not save one-off activity, meals, routine daily events, temporary mood, or other short-lived details
-    unless the user explicitly asks you to remember them.
     Path is optional. Use it as a stable memory address to group related memories.
     Prefer an existing path from list_memory_paths when one fits.
     Leave path empty when no useful grouping is clear.
@@ -1078,7 +1088,10 @@ async def replace_memory_content(
     __user__: dict = None,
 ) -> str:
     """
-    Update an existing saved memory by its ID when its content needs correction.
+    Update a saved memory by its ID only when the user explicitly asks you to change it.
+
+    Automatic memory extraction runs separately. Do not call this tool spontaneously
+    because information seems useful or appears to need correction. Follow the user's requested scope.
 
     :param memory_id: The ID of the memory to update
     :param content: The new content for the memory
@@ -1092,15 +1105,17 @@ async def replace_memory_content(
     try:
         user = UserModel(**__user__) if __user__ else None
 
-        memory = await update_memory_by_id(
-            memory_id=memory_id,
-            request=__request__,
-            form_data=MemoryUpdateModel(
-                content=content,
-                type=Memories.normalize_memory_type(type) if type else None,
-                path=path,
-            ),
-            user=user,
+        memory = MemoryModel.model_validate(
+            await update_memory_by_id(
+                memory_id=memory_id,
+                request=__request__,
+                form_data=MemoryUpdateModel(
+                    content=content,
+                    type=Memories.normalize_memory_type(type) if type else None,
+                    path=path,
+                ),
+                user=user,
+            )
         )
 
         return JSONCodec.dumps(
@@ -1124,7 +1139,10 @@ async def delete_memory(
     __user__: dict = None,
 ) -> str:
     """
-    Delete a saved memory by its ID.
+    Delete a saved memory by its ID only when the user explicitly asks you to forget or remove it.
+
+    Automatic memory extraction runs separately. Do not call this tool spontaneously
+    because information seems outdated or no longer useful. Follow the user's requested scope.
 
     :param memory_id: The ID of the memory to delete
     :return: Confirmation that the memory was deleted
@@ -1135,10 +1153,9 @@ async def delete_memory(
     try:
         user = UserModel(**__user__) if __user__ else None
 
-        result = await Memories.delete_memory_by_id_and_user_id(memory_id, user.id)
+        result = await _delete_memory_by_id(memory_id, __request__, user, db=None)
 
         if result:
-            await ASYNC_VECTOR_DB_CLIENT.delete(collection_name=f'user-memory-{user.id}', ids=[memory_id])
             return JSONCodec.dumps(
                 {'status': 'success', 'message': f'Memory {memory_id} deleted'},
                 ensure_ascii=False,
@@ -1165,7 +1182,7 @@ async def list_memories(
     try:
         user = UserModel(**__user__) if __user__ else None
 
-        memories = await Memories.get_memories_by_user_id(user.id)
+        memories = [MemoryModel.model_validate(row) for row in await _get_memories(__request__, user, db=None)]
 
         if memories:
             memory_rows = [
@@ -1176,6 +1193,7 @@ async def list_memories(
                     'content': m.content,
                     'created_at': time.strftime('%Y-%m-%d %H:%M', time.localtime(m.created_at)),
                     'updated_at': time.strftime('%Y-%m-%d %H:%M', time.localtime(m.updated_at)),
+                    'expires_at': m.expires_at,
                 }
                 for m in memories
             ]

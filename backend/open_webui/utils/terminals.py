@@ -274,6 +274,7 @@ async def get_terminal_skill(
     refresh: bool = True,
     overview: bool = False,
     tools_enabled: bool = True,
+    full_instructions: bool = False,
 ) -> dict | None:
     skill = await load_terminal_skill(request, user, metadata, skill_name, extra_params, refresh=refresh)
     if skill is None:
@@ -287,7 +288,10 @@ async def get_terminal_skill(
         'description': skill.get('description'),
         'directory': directory,
         **(
-            await skill_overview(skill['content'], resources, 'resources', tools_enabled)
+            {'content': skill['content'], 'next_offset': None,
+             **bounded_skill_manifest(resources, 'resources')}
+            if full_instructions
+            else await skill_overview(skill['content'], resources, 'resources', tools_enabled)
             if overview
             else {
                 **await skill_content_page(skill['content'], offset, max_chars),
