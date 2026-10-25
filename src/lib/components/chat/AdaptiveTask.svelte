@@ -98,9 +98,11 @@
 						after,
 						current.signal,
 						(event, sequence) => {
+							if (current.signal.aborted || activeId !== id) return;
 							if (sequence) after = sequence;
-							if (event.answer !== undefined) task = event;
-							else if (task) task = { ...task, ...event };
+							// Event IDs are replay ordinals; only the attached task owns its ID.
+							if (event.answer !== undefined) task = { ...event, id };
+							else if (task) task = { ...task, ...event, id };
 						}
 					);
 				} catch (failure) {
