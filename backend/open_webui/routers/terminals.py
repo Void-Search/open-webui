@@ -203,6 +203,18 @@ async def proxy_terminal(
         if value is not None:
             headers[name] = value
 
+    # Do not manufacture chunked bodies for unframed HTTP/1 read/delete requests.
+    # The terminal's forwarded-port client also streams requests, so explicitly
+    # retain zero length across that second hop (including HTTP/1.0 servers).
+    bodyless = (
+        request.method in {'GET', 'HEAD', 'OPTIONS', 'DELETE'}
+        and 'content-length' not in request.headers
+        and 'transfer-encoding' not in request.headers
+        and getattr(request, 'scope', {}).get('http_version', '1.1') in {'1.0', '1.1'}
+    )
+    if bodyless:
+        headers['content-length'] = '0'
+
     session = aiohttp.ClientSession(
         # Heartbeats keep active SSE/log streams alive; idle connections remain bounded.
         timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_read=300),
@@ -226,7 +238,7 @@ async def proxy_terminal(
             url=target_url,
             headers=headers,
             cookies=cookies,
-            data=request.stream(),
+            data=None if bodyless else request.stream(),
             ssl=AIOHTTP_CLIENT_SESSION_SSL,
             allow_redirects=False,
         )

@@ -2119,13 +2119,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         chat and chat.user_id == user.id and payload_tools is None and use_builtin_tools
     )
 
-    from open_webui.ravenous_memory.chat import connection as memory_connection, own_chat as own_memory_chat, prepare as prepare_memory, snapshot as memory_snapshot
-    ravenous_memory_target = await memory_connection(request, model)
-    if ravenous_memory_target:
-        await own_memory_chat(user, metadata)
-        memory_originals = memory_snapshot(copy.deepcopy(form_data['messages']))
-
-    if is_saved_chat_id(chat_id) and user_message_id and not ravenous_memory_target:
+    if is_saved_chat_id(chat_id) and user_message_id:
         db_messages = await load_messages_from_db(chat_id, user_message_id)
         if db_messages:
             # Continue: frontend sends assistant_message_id when continuing
@@ -2180,7 +2174,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
 
-    if is_saved_chat_id(chat_id) and user_message_id:
+    from open_webui.ravenous_memory.chat import connection as memory_connection, own_chat as own_memory_chat, prepare as prepare_memory, snapshot as memory_snapshot
+    ravenous_memory_target = await memory_connection(request, model)
+    if ravenous_memory_target:
+        await own_memory_chat(user, metadata)
+        memory_originals = memory_snapshot(copy.deepcopy(form_data.get('messages', [])))
+
+    if is_saved_chat_id(chat_id) and user_message_id and not ravenous_memory_target:
         system_message = get_system_message(form_data.get('messages', []))
         chat_system_prompt = get_content_from_message(system_message) if system_message else ''
 
